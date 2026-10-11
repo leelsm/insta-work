@@ -1,0 +1,96 @@
+[
+  {
+    "id": "c16b88c670d23e83fa1170c954cbc482",
+    "name": "프리텐다드 Bold",
+    "note": "깔끔한 뉴스·본문 자막",
+    "filename": "Pretendard-Bold.ttf",
+    "noonnu_url": "https://noonnu.cc/font_page/694",
+    "author": "길형진 (orioncactus)",
+    "license": "SIL OFL 1.1",
+    "license_file": "pretendard-LICENSE.txt"
+  },
+  {
+    "id": "ff7c354dd1a324e4cecc1223c4f71e74",
+    "name": "G마켓 산스 Bold",
+    "note": "굵고 시원한 강조 자막",
+    "filename": "GmarketSansTTFBold.ttf",
+    "noonnu_url": "https://noonnu.cc/font_page/366",
+    "author": "G마켓",
+    "license": "SIL OFL 1.1",
+    "license_file": "gmarket-LICENSE.txt"
+  },
+  {
+    "id": "e9b000dcc7a21bc82289fa7d159119ed",
+    "name": "수트 Bold",
+    "note": "단정하고 또렷한 자막",
+    "filename": "SUIT-Bold.ttf",
+    "noonnu_url": "https://noonnu.cc/font_page/845",
+    "author": "SUNN YOUN",
+    "license": "SIL OFL 1.1",
+    "license_file": "suit-LICENSE.txt"
+  },
+  {
+    "id": "4749fa5691157cf56a59d297b45e8889",
+    "name": "나눔스퀘어 네오 Bold",
+    "note": "부드러운 뉴스·설명 자막",
+    "filename": "NanumSquareNeo-cBd.ttf",
+    "noonnu_url": "https://noonnu.cc/font_page/1053",
+    "author": "네이버",
+    "license": "SIL OFL 1.1",
+    "license_file": "nanum-LICENSE.txt"
+  },
+  {
+    "id": "769677aef240bfc3b9965f2b50748075",
+    "name": "배민 주아체",
+    "note": "둥글고 친근한 일상 자막",
+    "filename": "Jua-Regular.ttf",
+    "noonnu_url": "https://noonnu.cc/font_page/53",
+    "author": "우아한형제들",
+    "license": "SIL OFL 1.1",
+    "license_file": "jua-LICENSE.txt"
+  },
+  {
+    "id": "cc38a4af9506a45254d1ce07c589ec47",
+    "name": "개구쟁이 Bold",
+    "note": "장난스럽고 통통 튀는 손글씨",
+    "filename": "Gaegu-Bold.ttf",
+    "noonnu_url": "https://fonts.google.com/specimen/Gaegu",
+    "author": "Copyright 2018 The Gaegu Project Authors",
+    "license": "SIL OFL 1.1",
+    "license_file": "gaegu-LICENSE.txt",
+    "source_url": "https://github.com/google/fonts/tree/main/ofl/gaegu"
+  },
+  {
+    "id": "ece32819ed58536355a49a095b0cdfdd",
+    "name": "감자꽃",
+    "note": "귀여운 아이 손글씨",
+    "filename": "GamjaFlower-Regular.ttf",
+    "noonnu_url": "https://noonnu.cc/font_page/1110",
+    "author": "Copyright (c) YoonDesign Inc. All Rights Reserved.",
+    "license": "SIL OFL 1.1",
+    "license_file": "gamjaflower-LICENSE.txt",
+    "source_url": "https://github.com/google/fonts/tree/main/ofl/gamjaflower"
+  },
+  {
+    "id": "716ff67a4b0675b35c26d60a4bb83173",
+    "name": "싱글데이",
+    "note": "동글동글한 포인트 자막",
+    "filename": "SingleDay-Regular.ttf",
+    "noonnu_url": "https://fonts.google.com/specimen/Single+Day",
+    "author": "Copyright 2015 DXKorea Inc. All rights reserved.",
+    "license": "SIL OFL 1.1",
+    "license_file": "singleday-LICENSE.txt",
+    "source_url": "https://github.com/google/fonts/tree/main/ofl/singleday"
+  },
+  {
+    "id": "360d2c0a880918aa48328d1d9219f539",
+    "name": "하이멜로디",
+    "note": "삐뚤빼뚤한 발랄한 손글씨",
+    "filename": "HiMelody-Regular.ttf",
+    "noonnu_url": "https://noonnu.cc/font_page/1109",
+    "author": "Copyright (c) YoonDesign Inc. All Rights Reserved.",
+    "license": "SIL OFL 1.1",
+    "license_file": "himelody-LICENSE.txt",
+    "source_url": "https://github.com/google/fonts/tree/main/ofl/himelody"
+  }
+]

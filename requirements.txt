@@ -1,0 +1,10 @@
+fastapi==0.142.2
+uvicorn==0.54.0
+httpx==0.28.1
+pillow==12.3.0
+imageio-ffmpeg==0.6.0
+keyring==25.7.0
+platformdirs==4.12.3
+boto3==1.43.108
+pywebview==6.2.1
+pytest==9.1.1

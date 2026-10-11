@@ -1,0 +1,37 @@
+.venv/
+node_modules/
+frontend/dist/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+build/
+dist/
+*.spec
+.env
+.runtime/
+.runtime-*.log
+
+# Local settings, generated files and verification captures
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+artifacts/
+DerivedData/
+*.xcarchive/
+*.ipa
+xcuserdata/
+*.xcuserstate
+
+# Credentials, signing material and user project exports
+*.pem
+*.key
+*.p12
+*.mobileprovision
+mac-credentials*.json
+credential-status.json
+instance.json
+*.sqlite3
+*.sqlite3-*
+*.studio
