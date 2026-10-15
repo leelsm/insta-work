@@ -11,11 +11,7 @@ from PIL import Image, ImageOps
 from .adapters import RemoteError, client, json_response, require_openai
 from .storage import new_id
 
-MUSIC = [
-    {'id': 'slow-morning', 'title': 'Slow Morning', 'mood': '차분한 일상 · 카페', 'bpm': 76, 'tags': ['일상', '카페', '감성'], 'license': 'CC0 · 앱 제공 오리지널 연주곡'},
-    {'id': 'little-weekend', 'title': 'Little Weekend', 'mood': '밝은 여행 · 음식', 'bpm': 104, 'tags': ['여행', '음식', '유쾌'], 'license': 'CC0 · 앱 제공 오리지널 연주곡'},
-    {'id': 'after-hours', 'title': 'After Hours', 'mood': '잔잔한 기록 · 산책', 'bpm': 88, 'tags': ['운동', '산책', '담백'], 'license': 'CC0 · 앱 제공 오리지널 연주곡'},
-]
+from .music import MUSIC
 
 
 def asset_path(root, asset_id):
@@ -84,3 +80,13 @@ def generate_daily(vault, settings, project, root):
         raise RemoteError('사진 수와 자막 형식을 확인하지 못했습니다. 기존 자막은 보존했습니다.') from None
     scenes = [{**s, 'narration': texts[i], 'body': '', 'source_ids': []} for i, s in enumerate(project['scenes'])]
     return scenes, caption, usage
+
+
+def generate_daily_scene(vault, settings, project, root, index):
+    if project.get('content_type') != 'daily' or not 0 <= index < len(project['scenes']):
+        raise ValueError('자막을 추천할 사진 장면을 선택하세요.')
+    selected = {**project, 'photos': [project['photos'][index]], 'scenes': [project['scenes'][index]]}
+    suggested, _, usage = generate_daily(vault, settings, selected, root)
+    scenes = [dict(s) for s in project['scenes']]
+    scenes[index]['narration'] = suggested[0]['narration'].strip()
+    return scenes, project.get('caption', ''), usage

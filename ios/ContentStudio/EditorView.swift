@@ -1,12 +1,14 @@
 import AVKit
+import Combine
+import ImageIO
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
 private enum EditorTool: String, Identifiable, CaseIterable {
-    case photo = "사진", subtitle = "자막", effects = "효과", music = "음악", ai = "분위기 · AI 자막"
+    case cover = "썸네일", photo = "사진", subtitle = "자막", effects = "효과", music = "음악", ai = "분위기 · AI 자막"
     var id: String { rawValue }
-    var icon: String { switch self { case .photo: return "photo"; case .subtitle: return "textformat"; case .effects: return "wand.and.stars"; case .music: return "music.note"; case .ai: return "sparkles" } }
+    var icon: String { switch self { case .cover: return "photo.on.rectangle"; case .photo: return "photo"; case .subtitle: return "textformat"; case .effects: return "wand.and.stars"; case .music: return "music.note"; case .ai: return "sparkles" } }
 }
 
 struct EditorView: View {
@@ -33,6 +35,10 @@ struct EditorView: View {
     @State private var resultURL: URL?
     @State private var transferURL: URL?
     @State private var error = ""
+    #if DEBUG
+    @State private var exportVerificationStarted = false
+    @State private var exportSheetAppeared = false
+    #endif
     @State private var draggedID: String?
     @State private var previewTime = 0.0
     @State private var previewPlaying = false
@@ -46,7 +52,7 @@ struct EditorView: View {
 
     init(initial: StudioProject, store: StudioStore, ai: AISettings, startWithAI: Bool = false) {
         self.store = store; self.ai = ai; _project = State(initialValue: initial)
-        if !initial.lastVideo.isEmpty {
+        if !initial.lastVideo.isEmpty && (initial.renderLayoutVersion ?? 0) >= VideoRenderer.layoutVersion {
             let saved = store.exports.appendingPathComponent(initial.lastVideo)
             if FileManager.default.fileExists(atPath: saved.path) { _resultURL = State(initialValue: saved) }
         }
@@ -66,7 +72,7 @@ struct EditorView: View {
                 preview(height: max(150, min(geometry.size.height - 285, tool == nil ? 460 : 270)))
                 timeline
                 HStack(spacing: 0) {
-                    ForEach([EditorTool.photo, .subtitle, .effects, .music]) { item in
+                    ForEach([EditorTool.photo, .subtitle, .effects, .music, .cover]) { item in
                         Button { pausePreview(); tool = item } label: {
                             VStack(spacing: 6) { Image(systemName: item.icon).font(.title3); Text(item.rawValue).font(.caption.weight(.medium)) }
                                 .frame(maxWidth: .infinity).frame(minHeight: 56)
@@ -80,9 +86,9 @@ struct EditorView: View {
         .navigationTitle("일상 영상 편집").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             Menu {
-                Button("AI로 사진 자막 제안", systemImage: "sparkles") { requestAI() }
+                Button("모든 사진 자막 제안", systemImage: "sparkles") { requestAI() }
                 Button("AI 연결 설정", systemImage: "gearshape") { pausePreview(); showAISettings = true }
-                Button("게시 문안 · Mac으로 보내기", systemImage: "square.and.arrow.up") { pausePreview(); showExport = true }
+                Button("게시 문안 · PC 버전으로 보내기", systemImage: "square.and.arrow.up") { pausePreview(); showExport = true }
             } label: { Image(systemName: "ellipsis.circle").frame(width: 44, height: 44) }.disabled(locked).accessibilityLabel("영상 메뉴")
         }
         .safeAreaInset(edge: .bottom) {
@@ -104,7 +110,7 @@ struct EditorView: View {
             NavigationStack {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        switch item { case .photo: photoPanel; case .subtitle: subtitlePanel; case .effects: effectsPanel; case .music: musicPanel; case .ai: aiPanel }
+                        switch item { case .cover: thumbnailPanel; case .photo: photoPanel; case .subtitle: subtitlePanel; case .effects: effectsPanel; case .music: musicPanel; case .ai: aiPanel }
                     }.padding(20).disabled(locked)
                 }.background(Color(uiColor: .systemGroupedBackground))
                     .navigationTitle(item == .photo ? "장면 \(selected + 1) · 사진" : item.rawValue).navigationBarTitleDisplayMode(.inline)
@@ -149,6 +155,14 @@ struct EditorView: View {
             if previewTime >= project.duration { pausePreview() }
         }
         .onDisappear { pausePreview(); renderTask?.cancel() }
+        #if DEBUG
+        .task {
+            if ProcessInfo.processInfo.arguments.contains("--verify-export-ui"), !exportVerificationStarted {
+                exportVerificationStarted = true
+                await verifyExportUI()
+            }
+        }
+        #endif
         .alert("작업을 완료하지 못했습니다", isPresented: Binding(get: { !error.isEmpty && tool == nil && !showExport }, set: { if !$0 { error = "" } })) { Button("확인") { error = "" } } message: { Text(error) }
     }
 
@@ -166,12 +180,13 @@ struct EditorView: View {
             let position = previewPosition
             let canvas = CGSize(width: height * 9 / 16, height: height)
             ZStack {
-                if project.scenes.indices.contains(position.index), let image = try? VideoRenderer.frame(project,
-                    scene: project.scenes[position.index], index: position.index, assets: store.assets,
-                    progress: position.elapsed / project.scenes[position.index].duration,
-                    elapsed: previewPlaying ? position.elapsed : nil, outputSize: canvas) {
-                    Image(uiImage: image).resizable().frame(width: canvas.width, height: canvas.height)
-                } else { Color.indigo.opacity(0.1).overlay(Image(systemName: "photo").font(.largeTitle)) }
+                if project.scenes.indices.contains(position.index) {
+                    SceneFrameView(project: project, scene: project.scenes[position.index], index: position.index,
+                        assets: store.assets, progress: position.elapsed / project.scenes[position.index].duration,
+                        elapsed: previewPlaying ? position.elapsed : nil, width: canvas.width, height: canvas.height,
+                        onPhotoMissing: { selected = position.index; pausePreview(); tool = .photo }).equatable()
+                } else { Color.indigo.opacity(0.1) }
+
             }.frame(width: canvas.width, height: canvas.height).clipShape(RoundedRectangle(cornerRadius: 14))
                 .contentShape(Rectangle()).gesture(DragGesture(minimumDistance: 5).onChanged { value in
                     guard !previewPlaying else { return }
@@ -198,7 +213,7 @@ struct EditorView: View {
                         Button { selected = index; seekToSelected() } label: {
                             VStack(spacing: 4) {
                                 ZStack(alignment: .topLeading) {
-                                    if let image = store.image(scene.photoID) { Image(uiImage: image).resizable().scaledToFill().frame(width: 56, height: 60).clipped() }
+                                    StudioPhotoThumbnail(url: store.assets.appendingPathComponent(scene.photoID), width: 56, height: 60).equatable()
                                     Text("\(index+1)").font(.caption2.bold()).foregroundStyle(.white).padding(4).background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 4))
                                 }.clipShape(RoundedRectangle(cornerRadius: 8))
                                 Text("\(scene.duration, specifier: "%.1f")초").font(.caption2).foregroundStyle(.secondary)
@@ -223,6 +238,10 @@ struct EditorView: View {
 
     @ViewBuilder private var photoPanel: some View {
         if let scene {
+            Button { project.thumbnailSceneID = scene.id; changed() } label: {
+                Label(project.thumbnailIndex == selected ? "선택한 썸네일 장면" : "이 장면을 썸네일로", systemImage: project.thumbnailIndex == selected ? "checkmark.circle.fill" : "photo.on.rectangle")
+            }.buttonStyle(.bordered)
+            sceneAIControls
             HStack {
                 Button { moveScene(selected, -1) } label: { Label("앞으로", systemImage: "arrow.left") }.disabled(selected == 0)
                 Spacer()
@@ -249,10 +268,25 @@ struct EditorView: View {
         }
     }
 
+    private var sceneAIControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                if ai.apiKey.isEmpty { showInspectorAISettings = true }
+                else { Task { await generateScene() } }
+            } label: { Label("AI 자막 추천", systemImage: "sparkles").frame(maxWidth: .infinity) }
+                .buttonStyle(.borderedProminent).disabled(locked || scene == nil)
+                .accessibilityIdentifier("scene-ai-subtitle")
+            Text(ai.apiKey.isEmpty ? "AI를 연결하면 선택한 사진의 자막을 추천받고 수정할 수 있어요." :
+                 "선택한 축소 사진 1장과 설명을 \(ai.provider) · \(ai.model)에 보냅니다. API 요금이 발생할 수 있어요.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
     private var subtitlePanel: some View {
         VStack(alignment: .leading, spacing: 16) {
             if let scene {
                 HStack { Text("장면 \(selected + 1) 자막").font(.headline); Spacer(); Text("\(scene.narration.count)/160").font(.caption).foregroundStyle(.secondary) }
+                sceneAIControls
                 TextField("이 순간을 한 문장으로", text: Binding(get: { scene.narration }, set: { value in
                     guard let index = project.scenes.firstIndex(where: { $0.id == scene.id }) else { return }
                     project.scenes[index].narration = String(value.prefix(160)); changed()
@@ -264,8 +298,10 @@ struct EditorView: View {
                 ForEach(store.bundledFonts) { Text($0.name).tag($0.id) }
                 if !project.fontAssetID.isEmpty && presetFont == nil { Text("내 폰트 · \(project.fontName)").tag("custom") }
             }
-            Text("오늘도 신나는 하루!").font(.custom(VideoRenderer.font(project, assets: store.assets, size: 24).fontName, size: 24)).padding(12).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: 10))
-            HStack { Text("크기 \(Int(project.effectiveSubtitleSize))px").font(.subheadline); Slider(value: Binding(get: { project.effectiveSubtitleSize }, set: { project.subtitleSize = $0; changed() }), in: 24...96, step: 2) }
+            Text(scene.flatMap { $0.narration.isEmpty ? nil : $0.narration } ?? "오늘도 신나는 하루!")
+                .font(.custom(VideoRenderer.font(project, assets: store.assets, size: project.effectiveSubtitleSize / 2).fontName, size: project.effectiveSubtitleSize / 2))
+                .accessibilityIdentifier("subtitle-size-preview").padding(12).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: 10))
+            HStack { Text("크기 \(Int(project.effectiveSubtitleSize))px").font(.subheadline); Slider(value: Binding(get: { project.effectiveSubtitleSize }, set: { project.subtitleSize = $0; changed() }), in: 24...96, step: 2).accessibilityLabel("자막 글씨 크기").accessibilityIdentifier("subtitle-size-slider") }
             Picker("자막 모양", selection: binding(\.subtitleStyle)) { Text("반투명 박스").tag("box"); Text("심플 텍스트").tag("clean") }.pickerStyle(.segmented)
             HStack {
                 Button("하단 배치") { project.subtitleX = 0.5; project.subtitleY = 0.76; changed() }
@@ -292,8 +328,23 @@ struct EditorView: View {
     private var musicPanel: some View {
         VStack(alignment: .leading, spacing: 15) {
             selectionRow("음악 없이", icon: "speaker.slash", selected: project.musicID.isEmpty && project.musicAssetID.isEmpty) { project.musicID = ""; project.musicAssetID = ""; project.musicName = ""; changed() }
-            ForEach([("slow-morning", "Slow Morning", "차분한 일상 · 카페"), ("little-weekend", "Little Weekend", "밝은 여행 · 음식"), ("after-hours", "After Hours", "잔잔한 기록 · 산책")], id: \.0) { id, title, note in
-                selectionRow(title + " · " + note, icon: "music.note", selected: project.musicID == id && project.musicAssetID.isEmpty) { project.musicID = id; project.musicAssetID = ""; project.musicName = ""; changed() }
+            Picker("배경음악 분위기", selection: Binding(get: { project.effectiveMood }, set: { project.mood = $0; changed() })) {
+                ForEach(MusicLibrary.moods, id: \.self) { Text($0).tag($0) }
+            }
+            Text("\(project.effectiveMood)에 어울리는 BGM \(MusicLibrary.recommended(project.effectiveMood).count)곡").font(.caption).foregroundStyle(.secondary)
+            ForEach(MusicLibrary.recommended(project.effectiveMood)) { track in musicRow(track) }
+            if let selected = MusicLibrary.tracks.first(where: { $0.id == project.musicID }),
+               !MusicLibrary.recommended(project.effectiveMood).contains(where: { $0.id == selected.id }), project.musicAssetID.isEmpty {
+                Text("현재 선택한 곡").font(.caption)
+                musicRow(selected)
+            }
+            DisclosureGroup("전체 음악 · 오리지널 포함") {
+                ForEach(MusicLibrary.tracks) { track in musicRow(track) }
+            }
+            Link("참고한 YouTube Audio Library 채널", destination: URL(string: "https://www.youtube.com/channel/UCBjfXxHdjTdSOZ3fGqt_i-w")!).font(.caption)
+            if !project.musicCredit.isEmpty {
+                Text("출처 표기 필요 · 게시 문안을 공유하면 음악 출처도 함께 포함됩니다.").font(.caption).foregroundStyle(.secondary)
+                Text(project.musicCredit).font(.caption2).textSelection(.enabled)
             }
             if !project.musicAssetID.isEmpty { Label(project.musicName, systemImage: "checkmark.circle.fill").font(.subheadline).foregroundStyle(.indigo) }
             HStack {
@@ -313,10 +364,20 @@ struct EditorView: View {
         }
     }
 
+    private func musicRow(_ track: StudioMusic) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            selectionRow(track.title + " · " + track.mood, icon: "music.note", selected: project.musicID == track.id && project.musicAssetID.isEmpty) {
+                project.musicID = track.id; project.musicAssetID = ""; project.musicName = ""; project.musicOffset = 0; changed()
+            }
+            Text(track.license).font(.caption2).foregroundStyle(.secondary)
+            if let url = URL(string: track.reference_url), !track.reference_url.isEmpty { Link("채널에서 듣기", destination: url).font(.caption2) }
+        }
+    }
+
     private var aiPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
             Picker("분위기", selection: Binding(get: { project.effectiveMood }, set: { project.mood = $0; changed() })) {
-                ForEach(["일상", "여행", "카페", "음식", "운동", "산책"], id: \.self) { Text($0).tag($0) }
+                ForEach(MusicLibrary.moods, id: \.self) { Text($0).tag($0) }
             }
             TextField("사진 설명", text: Binding(get: { project.effectiveDescription }, set: { project.description = String($0.prefix(2000)); changed() }), axis: .vertical).lineLimit(3...5).textFieldStyle(.roundedBorder)
             Picker("자막 말투", selection: Binding(get: { project.effectiveTone }, set: { project.tone = $0; changed() })) {
@@ -327,34 +388,72 @@ struct EditorView: View {
             } else {
                 Text("\(ai.provider) · \(ai.model)").font(.caption).foregroundStyle(.secondary)
                 Text("아래 버튼을 누르면 축소한 사진 \(project.scenes.count)장과 설명을 선택한 AI 서비스로 전송합니다. 사진 입력을 지원하는 모델이 필요하며 API 요금이 발생할 수 있어요.").font(.caption).foregroundStyle(.secondary)
-                Button { Task { await generate() } } label: { Label(generating ? "AI 자막 제안 중…" : "사진 전송 · AI 자막 제안받기", systemImage: "sparkles").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).disabled(locked || project.scenes.isEmpty)
+                Button { Task { await generate() } } label: { Label(generating ? "AI 자막 제안 중…" : "모든 사진 자막 제안", systemImage: "sparkles").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent).disabled(locked || project.scenes.isEmpty)
             }
             Button { showInspectorAISettings = true } label: { Label(ai.apiKey.isEmpty ? "AI 연결하기" : "AI 연결 변경", systemImage: "gearshape") }.buttonStyle(.bordered)
+        }
+    }
+
+    private var thumbnailPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack { Text("영상 썸네일").font(.headline); Spacer(); Text("장면 \(project.thumbnailIndex + 1)").font(.caption).foregroundStyle(.secondary) }
+            Text("대표 이미지로 사용할 장면을 선택하세요. 완성한 썸네일 JPG도 함께 저장할 수 있어요.").font(.caption).foregroundStyle(.secondary)
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 78))], spacing: 12) {
+                ForEach(Array(project.scenes.enumerated()), id: \.element.id) { index, scene in
+                    Button { project.thumbnailSceneID = scene.id; changed() } label: {
+                        VStack(spacing: 6) {
+                            SceneFrameView(project: project, scene: scene, index: index, assets: store.assets,
+                                progress: 0.5, width: 72, height: 128).equatable()
+                                .frame(width: 72, height: 128).clipShape(RoundedRectangle(cornerRadius: 8))
+                            HStack(spacing: 4) { Text("장면 \(index + 1)"); if project.thumbnailIndex == index { Image(systemName: "checkmark.circle.fill") } }.font(.caption)
+                        }.padding(5).background(project.thumbnailIndex == index ? Color.indigo.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 10))
+                            .overlay(RoundedRectangle(cornerRadius: 10).stroke(project.thumbnailIndex == index ? .indigo : .clear, lineWidth: 2))
+                    }.buttonStyle(.plain).disabled(locked || project.thumbnailIndex == index)
+                        .accessibilityLabel("장면 \(index+1) 썸네일로 선택").accessibilityValue(project.thumbnailIndex == index ? "선택됨" : "")
+                }
+            }
         }
     }
 
     private var exportSheet: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                LazyVStack(alignment: .leading, spacing: 20) {
                     Text("\(project.scenes.count)장의 순간을 \(project.duration, specifier: "%.1f")초 영상으로").font(.headline)
                     if rendering { ProgressView(value: progress); Text(message).font(.caption); Button("제작 중단") { renderTask?.cancel() } }
+                    thumbnailPanel
+                    if !project.lastVideo.isEmpty && (project.renderLayoutVersion ?? 0) < VideoRenderer.layoutVersion {
+                        Text("이전에 만든 영상은 다시 제작해 주세요. 사진이 보이도록 수정된 MP4로 저장됩니다.").font(.subheadline).foregroundStyle(.orange)
+                    }
                     if let resultURL {
                         StudioVideoPlayer(url: resultURL).frame(height: 320).clipShape(RoundedRectangle(cornerRadius: 14))
+                        let thumbnailURL = VideoRenderer.thumbnailURL(for: resultURL)
+                        if FileManager.default.fileExists(atPath: thumbnailURL.path) {
+                            ShareLink(item: thumbnailURL) { Label("썸네일 JPG 저장 · 공유", systemImage: "photo") }.buttonStyle(.bordered)
+                        }
                         ShareLink(item: resultURL) { Label("MP4 저장 · 공유", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }.buttonStyle(.borderedProminent)
                     }
-                    Button { renderTask = Task { await render() } } label: {
+                    Button { startRender() } label: {
                         Label(resultURL == nil ? "MP4 영상 만들기" : "MP4 다시 만들기", systemImage: "film").frame(maxWidth: .infinity).padding(.vertical, 8)
                     }.buttonStyle(.borderedProminent).disabled(!project.canRender || locked)
                     if project.duration > 180 { Text("장면 시간을 줄여 180초 이하로 맞춰주세요.").font(.caption).foregroundStyle(.red) }
                     Text("게시 문안").font(.headline)
                     TextField("본문과 해시태그", text: binding(\.caption), axis: .vertical).lineLimit(4...8).textFieldStyle(.roundedBorder).disabled(locked)
-                    if !project.caption.isEmpty { ShareLink(item: project.caption) { Label("게시 문안 공유", systemImage: "doc.on.doc") } }
+                    if !project.musicCredit.isEmpty {
+                        Text("음악 출처 · 게시 문안에 포함").font(.subheadline.bold())
+                        Text(project.musicCredit).font(.caption).textSelection(.enabled)
+                    }
+                    if project.postingCaption.count > 2200 { Text("음악 출처 포함 2200자를 넘었습니다. 본문을 줄여주세요.").font(.caption).foregroundStyle(.orange) }
+                    if !project.postingCaption.isEmpty { ShareLink(item: project.postingCaption) { Label("게시 문안 + 음악 출처 공유", systemImage: "doc.on.doc") } }
                     Divider()
-                    Button { do { transferURL = try store.exportTransfer(project) } catch { self.error = error.localizedDescription } } label: { Label("Mac에서 이어서 편집하기", systemImage: "desktopcomputer") }.buttonStyle(.bordered).disabled(locked)
+                    Button { do { transferURL = try store.exportTransfer(project) } catch { self.error = error.localizedDescription } } label: { Label("PC 버전 Content Studio에서 이어서 편집하기", systemImage: "desktopcomputer") }.buttonStyle(.bordered).disabled(locked)
                     if let transferURL { ShareLink(item: transferURL) { Label(".studio 프로젝트 보내기", systemImage: "square.and.arrow.up") } }
                 }.padding(20)
-            }.navigationTitle("완성 · 저장").navigationBarTitleDisplayMode(.inline).toolbar { Button("완료") { showExport = false } }
+            }.navigationTitle("완성 · 저장").navigationBarTitleDisplayMode(.inline).toolbar { Button("완료") { showExport = false }.disabled(rendering) }
+                .interactiveDismissDisabled(rendering)
+                #if DEBUG
+                .onAppear { exportSheetAppeared = true }
+                #endif
                 .alert("작업을 완료하지 못했습니다", isPresented: Binding(get: { !error.isEmpty }, set: { if !$0 { error = "" } })) { Button("확인") { error = "" } } message: { Text(error) }
         }
     }
@@ -382,6 +481,7 @@ struct EditorView: View {
         })
     }
     private func changed() {
+        project.normalizeThumbnail()
         previewTime = min(previewTime, project.duration); previewAnchor = previewTime; previewEpoch = Date()
         project.lastVideo = ""; resultURL = nil; transferURL = nil
         store.save(project)
@@ -418,6 +518,18 @@ struct EditorView: View {
         } catch { self.error = error.localizedDescription }
     }
     private func requestAI() { pausePreview(); tool = .ai }
+    private func generateScene() async {
+        guard !locked, let original = scene else { return }
+        pausePreview(); generating = true; message = "장면 \(selected + 1)의 자막을 추천하는 중…"
+        defer { generating = false }
+        do {
+            let text = try await AIService.suggestScene(project: project, sceneID: original.id,
+                provider: ai.provider, model: ai.model, endpoint: ai.endpoint, key: ai.apiKey, assets: store.assets)
+            try project.applySceneSubtitle(sceneID: original.id, text: text)
+            changed(); tool = .subtitle
+        } catch { self.error = error.localizedDescription }
+    }
+
     private func generate() async {
         generating = true; message = "사진에 맞는 자막을 제안하는 중…"; defer { generating = false }
         do {
@@ -426,11 +538,55 @@ struct EditorView: View {
             project.caption = result.caption; changed(); tool = .subtitle
         } catch { self.error = error.localizedDescription }
     }
+    #if DEBUG
+    @MainActor private func verifyExportUI() async {
+        var checks: [String: Bool] = [:]
+        var lastTick = Date(); var maxGap = 0.0; var ticks = 0
+        var phase = "opening"; var gaps: [[String: Any]] = []; var openingGap = 0.0
+        let heartbeat = Timer(timeInterval: 0.1, repeats: true) { _ in
+            let now = Date(); let gap = now.timeIntervalSince(lastTick)
+            if gap > 0.5 { gaps.append(["phase": phase, "seconds": gap]) }
+            maxGap = max(maxGap, gap); lastTick = now; ticks += 1
+        }
+        RunLoop.main.add(heartbeat, forMode: .common)
+        defer { heartbeat.invalidate() }
+        do {
+            showExport = true
+            try await Task.sleep(nanoseconds: 2_000_000_000)
+            checks["export_sheet_presented"] = exportSheetAppeared
+            checks["ten_photo_project"] = project.scenes.count == 10 && project.duration == 30
+            openingGap = maxGap; maxGap = 0; lastTick = Date(); phase = "rendering"
+            await render()
+            phase = "finished"
+            checks["export_saved"] = resultURL != nil && !project.lastVideo.isEmpty
+            if let url = resultURL {
+                let asset = AVURLAsset(url: url)
+                checks["mp4_duration"] = abs(try await asset.load(.duration).seconds - project.duration) < 0.1
+                checks["mp4_audio"] = !(try await asset.loadTracks(withMediaType: .audio)).isEmpty
+                checks["thumbnail_saved"] = FileManager.default.fileExists(atPath: VideoRenderer.thumbnailURL(for: url).path)
+                checks.merge(try await MobileVerification.decodedPhotoChecks(project: project, video: url, assets: store.assets)) { _, new in new }
+            }
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            checks["ui_responsive_during_export"] = ticks > 20 && maxGap < 2
+            checks["export_sheet_opens_without_watchdog"] = openingGap < 5
+        } catch { checks["completed"] = false }
+        let receipt: [String: Any] = ["checks": checks, "max_ui_gap_seconds": maxGap, "opening_ui_gap_seconds": openingGap, "heartbeat_ticks": ticks, "slow_ticks": gaps]
+        if let data = try? JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]) {
+            try? data.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("export-ui-receipt.json"), options: .atomic)
+        }
+    }
+    #endif
+
+    private func startRender() {
+        guard !locked else { return }
+        pausePreview(); rendering = true
+        renderTask = Task { await render() }
+    }
     private func render() async {
-        pausePreview(); rendering = true; progress = 0; message = "영상을 준비하는 중…"; defer { rendering = false }
+        pausePreview(); rendering = true; progress = 0; message = "영상을 준비하는 중…"; defer { rendering = false; renderTask = nil }
         do {
             let url = try await VideoRenderer.render(project, assets: store.assets, exports: store.exports) { value, status in Task { @MainActor in progress = value; message = status } }
-            resultURL = url; project.lastVideo = url.lastPathComponent; project.renderLayoutVersion = 3; store.save(project)
+            resultURL = url; project.lastVideo = url.lastPathComponent; project.renderLayoutVersion = VideoRenderer.layoutVersion; store.save(project)
         } catch is CancellationError { message = "영상 제작을 중단했습니다." }
         catch { self.error = error.localizedDescription }
     }
@@ -468,12 +624,145 @@ private struct SceneReorderDelegate: DropDelegate {
 
 private struct StudioVideoPlayer: View {
     let url: URL
-    @State private var player = AVPlayer()
+    @State private var poster: UIImage?
+    @State private var player: AVPlayer?
+    @State private var showingPoster = true
     var body: some View {
-        VideoPlayer(player: player).onAppear {
+        ZStack {
+            if !showingPoster { VideoPlayer(player: player) }
+            else if poster == nil { Color.black.overlay { ProgressView().tint(.white) } }
+            if showingPoster, let poster {
+                Button {
+                    showingPoster = false; player?.seek(to: .zero); player?.play()
+                } label: {
+                    ZStack {
+                        Image(uiImage: poster).resizable().scaledToFit()
+                        Image(systemName: "play.circle.fill").font(.system(size: 54)).foregroundStyle(.white).shadow(radius: 4)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
+                }.buttonStyle(.plain).accessibilityLabel("완성 영상 재생")
+            }
+        }.task(id: url) {
+            showingPoster = true
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             try? AVAudioSession.sharedInstance().setActive(true)
-            player.replaceCurrentItem(with: AVPlayerItem(url: url)); player.isMuted = false
-        }.onDisappear { player.pause() }
+            let source = url
+            let media = await Task.detached(priority: .utility) { () -> (AVPlayer, UIImage?) in
+                let asset = AVURLAsset(url: source)
+                _ = try? await asset.load(.isPlayable)
+                let ready = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+                let image: UIImage? = autoreleasepool {
+                    guard let source = CGImageSourceCreateWithURL(VideoRenderer.thumbnailURL(for: source) as CFURL, nil),
+                          let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                            kCGImageSourceCreateThumbnailFromImageAlways: true,
+                            kCGImageSourceThumbnailMaxPixelSize: 960,
+                            kCGImageSourceCreateThumbnailWithTransform: true,
+                            kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { return nil }
+                    return UIImage(cgImage: image)
+                }
+                return (ready, image)
+            }.value
+            guard !Task.isCancelled else { media.0.pause(); return }
+            player = media.0; poster = media.1; showingPoster = media.1 != nil
+            player?.isMuted = false
+            // The exported fade starts on black; show a visible photo before playback.
+            await player?.seek(to: CMTime(seconds: 0.3, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        }.onDisappear { player?.pause() }
+    }
+}
+
+private struct SceneFrameRequest: Hashable {
+    let project: StudioProject
+    let scene: StudioScene
+    let index: Int
+    let assets: URL
+    let progress: Double
+    let elapsed: Double?
+    let width: CGFloat
+    let height: CGFloat
+}
+
+private struct SceneFrameView: View, Equatable {
+    let project: StudioProject
+    let scene: StudioScene
+    let index: Int
+    let assets: URL
+    var progress = 0.0
+    var elapsed: Double? = nil
+    let width: CGFloat
+    let height: CGFloat
+    var onPhotoMissing: (() -> Void)? = nil
+    @State private var image: UIImage?
+    @State private var failed = false
+    private var request: SceneFrameRequest {
+        SceneFrameRequest(project: project, scene: scene, index: index, assets: assets,
+                          progress: progress, elapsed: elapsed, width: width, height: height)
+    }
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.request == rhs.request }
+    var body: some View {
+        ZStack {
+            if let image { Image(uiImage: image).resizable().scaledToFit() }
+            else if failed {
+                Color.indigo.opacity(0.1).overlay {
+                    VStack(spacing: 10) {
+                        Image(systemName: "photo").font(.title)
+                        if let onPhotoMissing {
+                            Text("사진을 불러올 수 없어요").font(.caption)
+                            Button("사진 다시 선택", action: onPhotoMissing).font(.caption)
+                        }
+                    }
+                }
+            } else { Color.indigo.opacity(0.1).overlay { ProgressView() } }
+        }.frame(width: width, height: height)
+            .task(id: request) {
+                let value = request
+                let job = Task.detached(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    return try autoreleasepool {
+                        try VideoRenderer.frame(value.project, scene: value.scene, index: value.index,
+                            assets: value.assets, progress: value.progress, elapsed: value.elapsed,
+                            outputSize: CGSize(width: value.width, height: value.height))
+                    }
+                }
+                do {
+                    let rendered = try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+                    try Task.checkCancellation()
+                    image = rendered; failed = false
+                } catch is CancellationError { }
+                catch { if !Task.isCancelled { image = nil; failed = true } }
+            }
+    }
+}
+
+// Decode only the pixels needed for list/timeline thumbnails. Full-resolution
+// photo decoding must not run synchronously inside SwiftUI layout.
+struct StudioPhotoThumbnail: View, Equatable {
+    let url: URL
+    let width: CGFloat
+    let height: CGFloat
+    @State private var image: UIImage?
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.url == rhs.url && lhs.width == rhs.width && lhs.height == rhs.height
+    }
+    var body: some View {
+        ZStack {
+            if let image { Image(uiImage: image).resizable().scaledToFill() }
+            else { Color.indigo.opacity(0.1).overlay(Image(systemName: "photo")) }
+        }.frame(width: width, height: height).clipped()
+            .task(id: url) {
+                let sourceURL = url; let dimension = max(width, height) * 3
+                let job = Task.detached(priority: .utility) {
+                    autoreleasepool { () -> UIImage? in
+                        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil),
+                              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                                kCGImageSourceCreateThumbnailWithTransform: true,
+                                kCGImageSourceThumbnailMaxPixelSize: dimension,
+                                kCGImageSourceShouldCacheImmediately: true] as CFDictionary) else { return nil }
+                        return UIImage(cgImage: image)
+                    }
+                }
+                let result = await job.value
+                if !Task.isCancelled { image = result }
+            }
     }
 }

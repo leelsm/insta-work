@@ -54,4 +54,6 @@ def test_motion_transition_and_scene_order_in_real_mp4(client, tmp_path, kind, m
     else: assert first.crop((0,100,1080,1000)).tobytes() != later.crop((0,100,1080,1000)).tobytes()
     brightness=sum(ImageStat.Stat(boundary).mean)/3
     assert brightness < 5 if transition=='fade' else brightness > 60
-    assert result['duration']==4 and result['layout_version']==3
+    assert decode(video,0).getpixel((500,1300))[0] > 150
+    assert decode(video,4-1/30).getpixel((500,1300))[2] > 150
+    assert result['duration']==4 and result['layout_version']==4

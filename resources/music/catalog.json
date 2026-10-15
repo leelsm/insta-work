@@ -1,0 +1,285 @@
+{
+  "reference_channel": "https://www.youtube.com/channel/UCBjfXxHdjTdSOZ3fGqt_i-w",
+  "license_source": "https://incompetech.com/music/royalty-free/licenses/",
+  "recommendations": {
+    "일상": [
+      "carefree",
+      "dream-culture",
+      "cool-vibes"
+    ],
+    "여행": [
+      "carefree",
+      "happy-alley",
+      "hustle"
+    ],
+    "카페": [
+      "hep-cats",
+      "cool-vibes",
+      "dream-culture"
+    ],
+    "음식": [
+      "hep-cats",
+      "happy-alley",
+      "carefree"
+    ],
+    "운동": [
+      "hustle",
+      "happy-alley",
+      "hep-cats"
+    ],
+    "산책": [
+      "dream-culture",
+      "cool-vibes",
+      "carefree"
+    ],
+    "감성": [
+      "dream-culture",
+      "cool-vibes"
+    ],
+    "정보 전달": [
+      "cool-vibes",
+      "dream-culture",
+      "hep-cats"
+    ],
+    "긴장감": [
+      "covert-affair",
+      "harlequin"
+    ]
+  },
+  "tracks": [
+    {
+      "id": "slow-morning",
+      "title": "Slow Morning",
+      "mood": "차분한 일상 · 카페",
+      "bpm": 76,
+      "tags": [
+        "일상",
+        "카페",
+        "감성"
+      ],
+      "filename": "slow-morning.wav",
+      "artist": "Content Studio",
+      "license": "CC0 · 앱 제공 오리지널 연주곡",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "attribution": "",
+      "source_url": "",
+      "reference_url": "",
+      "sha256": "e45f75d00961e010b00d3eed6c4241ef5d49dff32c16643c4a53b07d0f1cf5f8"
+    },
+    {
+      "id": "little-weekend",
+      "title": "Little Weekend",
+      "mood": "밝은 여행 · 음식",
+      "bpm": 104,
+      "tags": [
+        "여행",
+        "음식",
+        "유쾌"
+      ],
+      "filename": "little-weekend.wav",
+      "artist": "Content Studio",
+      "license": "CC0 · 앱 제공 오리지널 연주곡",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "attribution": "",
+      "source_url": "",
+      "reference_url": "",
+      "sha256": "b519c7b7383f74649c31add2906f2129cfad6b9091c8c42511ea6ef1d5a170bb"
+    },
+    {
+      "id": "after-hours",
+      "title": "After Hours",
+      "mood": "잔잔한 기록 · 산책",
+      "bpm": 88,
+      "tags": [
+        "운동",
+        "산책",
+        "담백"
+      ],
+      "filename": "after-hours.wav",
+      "artist": "Content Studio",
+      "license": "CC0 · 앱 제공 오리지널 연주곡",
+      "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "attribution": "",
+      "source_url": "",
+      "reference_url": "",
+      "sha256": "cb6d744270e1c8747dc8867444909a6a10b8c884df2d279382b1a1150b05bbdd"
+    },
+    {
+      "id": "carefree",
+      "title": "Carefree",
+      "mood": "밝고 편안한 우쿨렐레",
+      "bpm": 96,
+      "tags": [
+        "일상",
+        "여행",
+        "음식",
+        "산책"
+      ],
+      "filename": "carefree.mp3",
+      "artist": "Kevin MacLeod",
+      "license": "CC BY 4.0 · 출처 표기 필요",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "BGM: Carefree — Kevin MacLeod (incompetech.com)\nhttps://incompetech.com/music/royalty-free/index.html?isrc=USUAN1400037\nCC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n영상에 맞춰 반복·음량·시작 구간·페이드 편집.",
+      "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1400037",
+      "reference_url": "https://www.youtube.com/watch?v=lUc_QBoAGCg",
+      "download_url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Carefree.mp3",
+      "isrc": "USUAN1400037",
+      "sha256": "8433b770a630d9b1594fd484442c677907ece899a4d149954cd2e74fd733e311",
+      "verified_at": "2026-10-11"
+    },
+    {
+      "id": "hep-cats",
+      "title": "Hep Cats",
+      "mood": "경쾌한 카페 · 재즈",
+      "bpm": 90,
+      "tags": [
+        "카페",
+        "음식",
+        "운동",
+        "정보 전달"
+      ],
+      "filename": "hep-cats.mp3",
+      "artist": "Kevin MacLeod",
+      "license": "CC BY 4.0 · 출처 표기 필요",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "BGM: Hep Cats — Kevin MacLeod (incompetech.com)\nhttps://incompetech.com/music/royalty-free/index.html?isrc=USUAN1500022\nCC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n영상에 맞춰 반복·음량·시작 구간·페이드 편집.",
+      "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1500022",
+      "reference_url": "https://www.youtube.com/watch?v=gKyut_ubg68",
+      "download_url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Hep%20Cats.mp3",
+      "isrc": "USUAN1500022",
+      "sha256": "090cbdd911a87a6e1f87859082e07a7569993b94ebcdb41e3b17dcf42cbf3476",
+      "verified_at": "2026-10-11"
+    },
+    {
+      "id": "cool-vibes",
+      "title": "Cool Vibes",
+      "mood": "차분한 재즈 · 정보 전달",
+      "bpm": 83,
+      "tags": [
+        "일상",
+        "카페",
+        "산책",
+        "감성",
+        "정보 전달"
+      ],
+      "filename": "cool-vibes.mp3",
+      "artist": "Kevin MacLeod",
+      "license": "CC BY 4.0 · 출처 표기 필요",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "BGM: Cool Vibes — Kevin MacLeod (incompetech.com)\nhttps://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100863\nCC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n영상에 맞춰 반복·음량·시작 구간·페이드 편집.",
+      "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100863",
+      "reference_url": "https://www.youtube.com/watch?v=nETQqYPLwWU",
+      "download_url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Cool%20Vibes.mp3",
+      "isrc": "USUAN1100863",
+      "sha256": "86e5afb1f71da4c45927bb693cc32e2f72954137cf010599a912fa89cfd4db2e",
+      "verified_at": "2026-10-11"
+    },
+    {
+      "id": "dream-culture",
+      "title": "Dream Culture",
+      "mood": "감성적인 피아노 · 산책",
+      "bpm": 70,
+      "tags": [
+        "일상",
+        "카페",
+        "산책",
+        "감성",
+        "정보 전달"
+      ],
+      "filename": "dream-culture.mp3",
+      "artist": "Kevin MacLeod",
+      "license": "CC BY 4.0 · 출처 표기 필요",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "BGM: Dream Culture — Kevin MacLeod (incompetech.com)\nhttps://incompetech.com/music/royalty-free/index.html?isrc=USUAN1300046\nCC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n영상에 맞춰 반복·음량·시작 구간·페이드 편집.",
+      "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1300046",
+      "reference_url": "https://www.youtube.com/watch?v=Wqt4SLRVekE",
+      "download_url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Dream%20Culture.mp3",
+      "isrc": "USUAN1300046",
+      "sha256": "f12cbb52bd4b92bd6cf8a343645567c119627e9cbf98108a3eb6ac2cc275ee46",
+      "verified_at": "2026-10-11"
+    },
+    {
+      "id": "hustle",
+      "title": "Hustle",
+      "mood": "활기찬 여행 · 운동",
+      "bpm": 120,
+      "tags": [
+        "여행",
+        "운동"
+      ],
+      "filename": "hustle.mp3",
+      "artist": "Kevin MacLeod",
+      "license": "CC BY 4.0 · 출처 표기 필요",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "BGM: Hustle — Kevin MacLeod (incompetech.com)\nhttps://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100793\nCC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n영상에 맞춰 반복·음량·시작 구간·페이드 편집.",
+      "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100793",
+      "reference_url": "https://www.youtube.com/watch?v=6APjetfkgFc",
+      "download_url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Hustle.mp3",
+      "isrc": "USUAN1100793",
+      "sha256": "8acbe21e78162eb14e75e914554d774585e6e7e9f29cc641047bccbd7b42dfd1",
+      "verified_at": "2026-10-11"
+    },
+    {
+      "id": "covert-affair",
+      "title": "Covert Affair",
+      "mood": "긴장감 있는 재즈",
+      "bpm": 68,
+      "tags": [
+        "긴장감"
+      ],
+      "filename": "covert-affair.mp3",
+      "artist": "Kevin MacLeod",
+      "license": "CC BY 4.0 · 출처 표기 필요",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "BGM: Covert Affair — Kevin MacLeod (incompetech.com)\nhttps://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100795\nCC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n영상에 맞춰 반복·음량·시작 구간·페이드 편집.",
+      "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100795",
+      "reference_url": "https://www.youtube.com/watch?v=8NWPkdblLm8",
+      "download_url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Covert%20Affair.mp3",
+      "isrc": "USUAN1100795",
+      "sha256": "279be47ea7880460be1393d66a83bcc7bee18e10d73537420098e4e1b1c0646f",
+      "verified_at": "2026-10-11"
+    },
+    {
+      "id": "happy-alley",
+      "title": "Happy Alley",
+      "mood": "밝은 여행 · 음식",
+      "bpm": 112,
+      "tags": [
+        "여행",
+        "음식",
+        "운동"
+      ],
+      "filename": "happy-alley.mp3",
+      "artist": "Kevin MacLeod",
+      "license": "CC BY 4.0 · 출처 표기 필요",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "BGM: Happy Alley — Kevin MacLeod (incompetech.com)\nhttps://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100482\nCC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n영상에 맞춰 반복·음량·시작 구간·페이드 편집.",
+      "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100482",
+      "reference_url": "https://www.youtube.com/watch?v=D3U5bjww7XI",
+      "download_url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Happy%20Alley.mp3",
+      "isrc": "USUAN1100482",
+      "sha256": "f598c8ee624f1db9a2cd38886524a40baff4ce730dcf999c0763791268fa8265",
+      "verified_at": "2026-10-11"
+    },
+    {
+      "id": "harlequin",
+      "title": "Harlequin",
+      "mood": "독특한 이야기 · 호기심",
+      "bpm": 75,
+      "tags": [
+        "긴장감"
+      ],
+      "filename": "harlequin.mp3",
+      "artist": "Kevin MacLeod",
+      "license": "CC BY 4.0 · 출처 표기 필요",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "BGM: Harlequin — Kevin MacLeod (incompetech.com)\nhttps://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100635\nCC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n영상에 맞춰 반복·음량·시작 구간·페이드 편집.",
+      "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100635",
+      "reference_url": "https://www.youtube.com/watch?v=vJPu4WMUPbA",
+      "download_url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Harlequin.mp3",
+      "isrc": "USUAN1100635",
+      "sha256": "4c131be98397763dcd0afdbde6e1a3afb21e90a41a1d93394287d0c382a8e9d6",
+      "verified_at": "2026-10-11"
+    }
+  ]
+}

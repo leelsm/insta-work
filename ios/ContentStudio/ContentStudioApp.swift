@@ -16,12 +16,34 @@ import UIKit
                 .task {
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--verify-rendering") { await verifyRendering() }
+                    if ProcessInfo.processInfo.arguments.contains("--repair-saved-videos") { await repairSavedVideos() }
                     #endif
                 }
                 .tint(.indigo)
         }
     }
     #if DEBUG
+    @MainActor private func repairSavedVideos() async {
+        var checks: [String: Bool] = [:]; var count = 0
+        for original in store.projects.filter({ $0.isDaily && !$0.lastVideo.isEmpty && ($0.renderLayoutVersion ?? 0) < VideoRenderer.layoutVersion }) {
+            do {
+                let url = try await VideoRenderer.render(original, assets: store.assets, exports: store.exports) { _, _ in }
+                let pixels = try await MobileVerification.decodedPhotoChecks(project: original, video: url, assets: store.assets)
+                checks.merge(pixels) { _, new in new }
+                guard pixels.values.allSatisfy({ $0 }), let latest = store.projects.first(where: { $0.id == original.id }), latest == original else {
+                    checks["repair_preserves_current_edits"] = false
+                    try? FileManager.default.removeItem(at: url); try? FileManager.default.removeItem(at: VideoRenderer.thumbnailURL(for: url))
+                    continue
+                }
+                var repaired = latest; repaired.lastVideo = url.lastPathComponent; repaired.renderLayoutVersion = VideoRenderer.layoutVersion
+                store.save(repaired); count += 1; checks["repair_preserves_current_edits"] = true
+            } catch { checks["repair_completed"] = false }
+        }
+        let receipt: [String: Any] = ["checks": checks, "repaired_count": count]
+        if let data = try? JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]) {
+            try? data.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("repair-video-receipt.json"), options: .atomic)
+        }
+    }
     @MainActor private func verifyRendering() async {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("render-check-" + UUID().uuidString)
         var checks: [String: Bool] = [:]
@@ -31,7 +53,10 @@ import UIKit
             project.scenes[0].duration = 0.4
             project.scenes[0].body = "카드 본문 확인"
             project.scenes[0].narration = "자막 확인"
-            for music in ["slow-morning", "little-weekend", "after-hours"] {
+            checks["music_catalog_11_tracks"] = MusicLibrary.tracks.count == 11
+            checks["photo_save_usage_description"] = !(Bundle.main.object(forInfoDictionaryKey: "NSPhotoLibraryAddUsageDescription") as? String ?? "").isEmpty
+            checks["mood_recommendations"] = MusicLibrary.moods.allSatisfy { (2...3).contains(MusicLibrary.recommended($0).count) }
+            for music in MusicLibrary.tracks.map(\.id) {
                 project.musicID = music
                 let url = try await VideoRenderer.render(project, assets: temporaryStore.assets, exports: temporaryStore.exports) { _, _ in }
                 let asset = AVURLAsset(url: url)
@@ -39,6 +64,10 @@ import UIKit
                 let duration = try await asset.load(.duration)
                 checks[music] = !tracks.isEmpty && duration.seconds > 0.3
             }
+            project.musicID = "carefree"; project.caption = "오늘의 기록"
+            checks["music_credit_in_caption"] = project.postingCaption.contains("Kevin MacLeod") && project.postingCaption.contains("CC BY 4.0")
+            project.musicID = ""
+            checks["no_music_no_credit"] = project.postingCaption == project.caption
             temporaryStore.delete(project)
             checks["delete_persisted"] = StudioStore(root: root).projects.isEmpty
             let session = AVAudioSession.sharedInstance()
@@ -57,13 +86,30 @@ import UIKit
 
 #if DEBUG
 @MainActor enum MobileVerification {
-    static var previewRoot: URL? {
-        ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-daily-") }) ?
+    static let previewRoot: URL? = {
+        if ProcessInfo.processInfo.arguments.contains("--verify-export-ui") {
+            return FileManager.default.temporaryDirectory.appendingPathComponent("export-ui-check-" + UUID().uuidString)
+        }
+        return ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--preview-daily-") }) ?
             FileManager.default.temporaryDirectory.appendingPathComponent("daily-ui-preview") : nil
-    }
+    }()
     static func previewProject(store: StudioStore) -> StudioProject? {
         guard previewRoot != nil else { return nil }
         if let project = store.projects.first { return project }
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("export-fixture")
+        let original = FileManager.default.fileExists(atPath: fixture.appendingPathComponent("projects.json").path) ? StudioStore(root: fixture) : StudioStore()
+        if ProcessInfo.processInfo.arguments.contains("--verify-export-ui"), let source = original.projects.first(where: { $0.isDaily && !$0.scenes.isEmpty }) {
+            var project = source; project.id = UUID().uuidString; project.title = "저장 화면 검증"; project.lastVideo = ""
+            for id in Set(source.scenes.map(\.photoID) + [source.fontAssetID, source.musicAssetID]).filter({ !$0.isEmpty }) {
+                try? FileManager.default.copyItem(at: original.assets.appendingPathComponent(id), to: store.assets.appendingPathComponent(id))
+            }
+            project.scenes = (0..<10).map { index in
+                var scene = source.scenes[index % source.scenes.count]; scene.id = UUID().uuidString; scene.duration = 3
+                return scene
+            }
+            project.thumbnailSceneID = project.scenes[7].id
+            store.save(project); return project
+        }
         var project = StudioProject(); project.title = "느긋한 주말의 기록"; project.mood = "산책"
         project.description = "햇살 아래 산책한 주말"; project.musicID = "after-hours"
         for (index, colors) in [[UIColor.systemOrange, UIColor.systemPink], [UIColor.systemTeal, UIColor.systemBlue], [UIColor.systemPurple, UIColor.systemIndigo]].enumerated() {
@@ -101,7 +147,9 @@ import UIKit
         if let font = store.bundledFonts.first { daily.fontAssetID = try store.importBundledFont(font); daily.fontName = font.name }
         let photo = daily.scenes[0].photoID; daily.scenes.swapAt(0,1); store.save(daily)
         checks["scene_order_persisted"] = StudioStore(root: store.root).projects.first?.scenes[1].photoID == photo
+        daily.thumbnailSceneID = daily.scenes[1].id
         let transferred = try store.importTransfer(store.exportTransfer(daily))
+        checks["thumbnail_transfer_selection"] = transferred.thumbnailIndex == 1
         checks["daily_transfer_settings"] = transferred.effectiveMood == "여행" && transferred.effectiveDescription == "산책한 주말" && transferred.effectiveTone == "가볍고 유쾌하게" && transferred.effectiveMusicOffset == 7.5 && transferred.effectiveSubtitleSize == 76 && transferred.effectiveMotion == "pan-left" && transferred.effectiveTransition == "cut"
         var legacy = StudioProject(); legacy.kind = "news"; legacy.scenes = [StudioScene(title: "기존 카드")]
         let legacyFile = try store.exportTransfer(legacy)
@@ -121,26 +169,171 @@ import UIKit
             }
             checks["photo_ai_payload_" + provider] = valid
         }
+        let selectedID = daily.scenes[1].id
+        let selectedProject = try AIService.sceneProject(daily, sceneID: selectedID)
+        for provider in ["openai", "anthropic", "opencode"] {
+            let chosen = try AIService.imageContent(project: selectedProject, assets: store.assets, provider: provider, instruction: "one scene")
+            let expected = try AIService.imageContent(project: { var p = daily; p.scenes = [daily.scenes[1]]; return p }(), assets: store.assets, provider: provider, instruction: "one scene")
+            checks["single_scene_payload_" + provider] = NSDictionary(dictionary: ["content": chosen]).isEqual(to: ["content": expected]) && chosen.count == 3
+        }
+        var edited = daily; edited.scenes.swapAt(0, 1)
+        let unchanged = edited
+        try edited.applySceneSubtitle(sceneID: selectedID, text: "새로운 장면 자막")
+        var expected = unchanged; expected.scenes[0].narration = "새로운 장면 자막"
+        checks["single_scene_preserves_other_edits"] = edited == expected
+        for invalid in ["", String(repeating: "가", count: 161)] {
+            let before = edited
+            do { try edited.applySceneSubtitle(sceneID: selectedID, text: invalid); checks["single_scene_invalid_\(invalid.count)"] = false }
+            catch { checks["single_scene_invalid_\(invalid.count)"] = edited == before }
+        }
+        do { try edited.applySceneSubtitle(sceneID: "missing", text: "추천"); checks["single_scene_missing_rejected"] = false }
+        catch { checks["single_scene_missing_rejected"] = edited == expected }
+        // A cold, scaled preview must contain the source photo, not just captions/background.
+        var previewScene = daily.scenes[1]; previewScene.photoID = try store.importPhoto(store.image(previewScene.photoID)!.jpegData(compressionQuality: 0.8)!)
+        previewScene.narration = ""; var previewProject = daily; previewProject.motion = "still"
+        for fit in ["cover", "contain"] {
+            previewScene.photoFit = fit
+            let preview = try VideoRenderer.frame(previewProject, scene: previewScene, index: 1, assets: store.assets, outputSize: CGSize(width: 180, height: 320))
+            let full = try VideoRenderer.frame(previewProject, scene: previewScene, index: 1, assets: store.assets)
+            func sample(_ image: UIImage) -> [UInt8] {
+                // Physical devices can use extended-range/P3 renderer buffers. Normalize
+                // to 8-bit sRGB before reading pixels so checks also work on device.
+                var pixels = [UInt8](repeating: 0, count: 9 * 16 * 4)
+                pixels.withUnsafeMutableBytes { bytes in
+                    let context = CGContext(data: bytes.baseAddress, width: 9, height: 16,
+                        bitsPerComponent: 8, bytesPerRow: 9 * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)!
+                    context.draw(image.cgImage!, in: CGRect(x: 0, y: 0, width: 9, height: 16))
+                }
+                return pixels
+            }
+            let smallPixels = sample(preview), fullPixels = sample(full)
+            checks["scaled_photo_preview_" + fit] = zip(smallPixels, fullPixels).allSatisfy { abs(Int($0)-Int($1)) < 12 } && smallPixels[(8*9+1)*4..<(8*9+1)*4+3].max()! > 200 && smallPixels[(8*9+1)*4..<(8*9+1)*4+3].min()! < 70
+        }
+        var missing = daily.scenes[0]; missing.photoID = "missing.jpg"
+        do { _ = try VideoRenderer.frame(daily, scene: missing, index: 0, assets: store.assets); checks["missing_preview_photo_reported"] = false }
+        catch { checks["missing_preview_photo_reported"] = true }
         for motion in ["still", "zoom", "zoom-out", "pan-left", "pan-right"] {
             daily.motion = motion
             let start = try VideoRenderer.frame(daily, scene: daily.scenes[0], index: 0, assets: store.assets, progress: 0).pngData()
             let end = try VideoRenderer.frame(daily, scene: daily.scenes[0], index: 0, assets: store.assets, progress: 1).pngData()
             checks["motion_" + motion] = motion == "still" ? start == end : start != end
         }
+        var reorderedCover = daily; reorderedCover.scenes.swapAt(0, 1)
+        checks["thumbnail_follows_reorder"] = reorderedCover.thumbnailIndex == 0 && reorderedCover.thumbnailScene?.id == daily.thumbnailSceneID
+        reorderedCover.scenes.remove(at: 0); reorderedCover.normalizeThumbnail()
+        checks["deleted_thumbnail_falls_back"] = reorderedCover.thumbnailIndex == 0 && reorderedCover.thumbnailScene != nil
         daily.motion = "zoom-out"; daily.transition = "fade"; daily.musicID = "little-weekend"
         let result = try await VideoRenderer.render(daily, assets: store.assets, exports: store.exports) { _, _ in }
+        checks.merge(try await decodedPhotoChecks(project: daily, video: result, assets: store.assets)) { _, new in new }
         let asset = AVURLAsset(url: result)
         let audio = try await asset.loadTracks(withMediaType: .audio)
         let duration = try await asset.load(.duration)
         checks["daily_mp4_with_offset_music"] = !audio.isEmpty && abs(duration.seconds - 4) < 0.05
+        let jpeg = try Data(contentsOf: VideoRenderer.thumbnailURL(for: result))
+        let expectedCover = try VideoRenderer.frame(daily, scene: daily.scenes[1], index: 1, assets: store.assets, progress: 0.5).jpegData(compressionQuality: 0.9)
+        checks["thumbnail_uses_selected_scene"] = jpeg == expectedCover
+        let metadata = try await asset.loadMetadata(for: .iTunesMetadata)
+        if let cover = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .iTunesMetadataCoverArt).first {
+            checks["thumbnail_embedded_with_music"] = try await cover.load(.dataValue) == jpeg
+        } else { checks["thumbnail_embedded_with_music"] = false }
+        var noMusic = daily; noMusic.musicID = ""
+        let silentURL = try await VideoRenderer.render(noMusic, assets: store.assets, exports: store.exports) { _, _ in }
+        let silentMetadata = try await AVURLAsset(url: silentURL).loadMetadata(for: .iTunesMetadata)
+        if let cover = AVMetadataItem.metadataItems(from: silentMetadata, filteredByIdentifier: .iTunesMetadataCoverArt).first {
+            checks["thumbnail_embedded_without_music"] = try await cover.load(.dataValue) == Data(contentsOf: VideoRenderer.thumbnailURL(for: silentURL))
+        } else { checks["thumbnail_embedded_without_music"] = false }
         var long = daily; long.scenes[0].duration = 30; long.scenes[1].duration = 30
         let task = Task { try await VideoRenderer.render(long, assets: store.assets, exports: store.exports) { _, _ in } }
         try await Task.sleep(nanoseconds: 100_000_000); task.cancel()
         do { _ = try await task.value; checks["render_cancelled"] = false }
         catch is CancellationError { checks["render_cancelled"] = true }
         catch { checks["render_cancelled"] = false }
+        checks["cancelled_render_cleans_temporary_video"] = !(try FileManager.default.contentsOfDirectory(at: store.exports, includingPropertiesForKeys: nil)).contains { $0.lastPathComponent.hasSuffix("-silent.mp4") }
+        checks.merge(try await fontSizeChecks(store: store)) { _, new in new }
         return checks
     }
 
+    nonisolated static func photoPixels(_ image: CGImage) -> [UInt8] {
+        var pixels = [UInt8](repeating: 0, count: 64 * 114 * 4)
+        pixels.withUnsafeMutableBytes { bytes in
+            let context = CGContext(data: bytes.baseAddress, width: 64, height: 114, bitsPerComponent: 8,
+                bytesPerRow: 64 * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)!
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 64, height: 114))
+        }
+        return pixels
+    }
+    nonisolated static func decodedPhotoChecks(project: StudioProject, video: URL, assets: URL) async throws -> [String: Bool] {
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+        var checks: [String: Bool] = [:]; var cursor = 0.0
+        var samples: [(String, Int, Double, Double)] = [("decoded_first_frame_photo", 0, 0, 0)]
+        for (index, scene) in project.scenes.enumerated() {
+            samples.append(("decoded_scene_\(index + 1)_photo", index, cursor + scene.duration / 2, scene.duration / 2))
+            cursor += scene.duration
+        }
+        samples.append(("decoded_last_frame_photo", project.scenes.count - 1, cursor - 1 / Double(VideoRenderer.fps), project.scenes.last!.duration - 1 / Double(VideoRenderer.fps)))
+        for (key, index, time, elapsed) in samples {
+            let image = try await generator.image(at: CMTime(seconds: time, preferredTimescale: 600)).image
+            let expected = try VideoRenderer.frame(project, scene: project.scenes[index], index: index, assets: assets,
+                progress: elapsed / project.scenes[index].duration, elapsed: elapsed)
+            let actualPixels = photoPixels(image), expectedPixels = photoPixels(expected.cgImage!)
+            let error = zip(actualPixels, expectedPixels).enumerated().filter { $0.offset % 4 != 3 }.reduce(0.0) { $0 + Double(abs(Int($1.element.0)-Int($1.element.1))) } / Double(64*114*3)
+            let average = actualPixels.enumerated().filter { $0.offset % 4 != 3 }.reduce(0.0) { $0 + Double($1.element) } / Double(64*114*3)
+            checks[key] = error < 12 && average > 10
+            if key == "decoded_first_frame_photo" {
+                try UIImage(cgImage: image).jpegData(compressionQuality: 0.85)?.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("decoded-first-frame.jpg"))
+            }
+        }
+        return checks
+    }
+
+    static func whitePixels(_ image: CGImage) -> Int {
+        var pixels = [UInt8](repeating: 0, count: image.width * image.height)
+        pixels.withUnsafeMutableBytes { bytes in
+            let context = CGContext(data: bytes.baseAddress, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        }
+        return pixels.filter { $0 > 225 }.count
+    }
+
+    static func fontSizeChecks(store: StudioStore) async throws -> [String: Bool] {
+        var checks: [String: Bool] = [:]
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 1080, height: 1920)).image { _ in
+            UIColor.black.setFill(); UIRectFill(CGRect(x: 0, y: 0, width: 1080, height: 1920))
+        }
+        let photoID = try store.importPhoto(image.jpegData(compressionQuality: 0.8)!)
+        var project = StudioProject(); var scene = StudioScene(title: "크기", photoID: photoID)
+        scene.narration = "한글 크기 확인"; scene.duration = 0.6
+        project.scenes = [scene]; project.subtitleStyle = "clean"; project.motion = "still"; project.transition = "cut"; project.musicID = ""
+        var fonts: [(String, String)] = [("system", "")]
+        for font in store.bundledFonts { fonts.append((font.id, try store.importBundledFont(font))) }
+        for (name, id) in fonts {
+            project.fontAssetID = id
+            let counts = try [24.0, 96.0].map { size in
+                try autoreleasepool {
+                    project.subtitleSize = size
+                    return whitePixels(try VideoRenderer.frame(project, scene: scene, index: 0, assets: store.assets).cgImage!)
+                }
+            }
+            checks["font_size_preview_" + name] = counts[0] > 0 && counts[1] > counts[0] * 6
+        }
+        project.fontAssetID = fonts.last!.1
+        var encodedCounts: [Int] = []
+        for size in [24.0, 96.0] {
+            project.subtitleSize = size
+            let url = try await VideoRenderer.render(project, assets: store.assets, exports: store.exports) { _, _ in }
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url)); generator.appliesPreferredTrackTransform = true
+            let frame = try await generator.image(at: CMTime(seconds: 0.3, preferredTimescale: 600)).image
+            encodedCounts.append(whitePixels(frame))
+        }
+        checks["font_size_encoded_mp4"] = encodedCounts[0] > 0 && encodedCounts[1] > encodedCounts[0] * 6
+        project.subtitleSize = 96; store.save(project)
+        checks["font_size_persisted"] = StudioStore(root: store.root).projects.first(where: { $0.id == project.id })?.effectiveSubtitleSize == 96
+        return checks
+    }
 }
 #endif

@@ -1,3 +1,4 @@
+import type {Project} from './types'
 let token = sessionStorage.getItem('studio_token') || ''
 export async function initialize(){
   const hash = new URLSearchParams(location.hash.slice(1))
@@ -79,3 +80,5 @@ export async function importTransfer(file:File):Promise<import('./types').Projec
 export const transferPath=(id:string)=>'/api/projects/'+id+'/transfer'
 
 export function isCurrentRender(p:{content_type:string;render:null|{layout_version?:number}}){return !!p.render&&(p.content_type==='daily'||(p.render.layout_version??0)>=2)}
+
+export function thumbnailPath(p:Project){return mediaPath(p,p.render?.thumbnail?'thumbnail.jpg':`card-${String((p.thumbnail_scene??0)+1).padStart(2,'0')}.png`)}

@@ -1,5 +1,7 @@
 # Bundled resources
 
+- BGM: eight unmodified MP3 recordings by Kevin MacLeod (incompetech.com), CC BY 4.0. Individual sources and attribution are in `music/catalog.json`; the full license is in `music/CC-BY-4.0.txt`. The app's three original instrumental recordings retain CC0. See `music/LICENSE.md`.
+
 - Noto Sans KR: Google Fonts / Noto contributors, SIL Open Font License 1.1. The original license is included as `OFL.txt`. Source: https://github.com/google/fonts/tree/main/ofl/notosanskr.
 - FFmpeg: binary supplied by `imageio-ffmpeg`. The Mac ARM binary used here reports FFmpeg 7.1, GPL version 2 or later. License text is included as `FFmpeg-GPLv2.txt`. Upstream source: https://github.com/FFmpeg/FFmpeg/tree/n7.1. Build distribution: https://github.com/imageio/imageio-ffmpeg.
 - Python and JavaScript dependencies retain their respective licenses. Packaging includes package metadata/licenses where supplied by PyInstaller collection hooks. Before external distribution, review the exact binary build, required corresponding source and all redistribution obligations; a link to upstream alone does not constitute a completed source distribution.

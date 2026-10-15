@@ -49,6 +49,7 @@ struct BundledStudioFont: Decodable, Identifiable {
 
     func save(_ project: StudioProject) {
         var copy = project
+        copy.normalizeThumbnail()
         copy.updatedAt = Date()
         if let index = projects.firstIndex(where: { $0.id == copy.id }) { projects[index] = copy }
         else { projects.insert(copy, at: 0) }
@@ -137,7 +138,8 @@ struct BundledStudioFont: Decodable, Identifiable {
             guard let url = assetURL(id) else { throw StudioError.invalidFile("프로젝트의 첨부 파일이 없습니다: \(id)") }
             encoded[id] = try Data(contentsOf: url).base64EncodedString()
         }
-        let transfer = TransferFile(project: project, assets: encoded)
+        var normalized = project; normalized.normalizeThumbnail()
+        let transfer = TransferFile(project: normalized, assets: encoded)
         let safeTitle = project.title.replacingOccurrences(of: "/", with: "-")
         let url = exports.appendingPathComponent(safeTitle + "-" + project.id.prefix(8) + ".studio")
         try JSONEncoder().encode(transfer).write(to: url, options: .atomic)
@@ -154,7 +156,7 @@ struct BundledStudioFont: Decodable, Identifiable {
             throw StudioError.invalidFile("지원하지 않는 프로젝트 파일입니다.")
         }
         var project = transfer.project
-        guard project.isDaily else { throw StudioError.invalidFile("카드뉴스는 Mac에서 편집해주세요. iPhone에서는 일상 영상 프로젝트를 가져올 수 있어요.") }
+        guard project.isDaily else { throw StudioError.invalidFile("카드뉴스는 PC 버전 Content Studio에서 편집해주세요. iPhone에서는 일상 영상 프로젝트를 가져올 수 있어요.") }
         guard (1...10).contains(project.scenes.count), project.duration <= 180,
               project.scenes.allSatisfy({ !$0.photoID.isEmpty && (2...30).contains($0.duration) &&
                   ["cover", "contain"].contains($0.photoFit) && (0...1).contains($0.positionX) && (0...1).contains($0.positionY) }),

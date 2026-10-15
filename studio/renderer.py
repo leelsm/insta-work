@@ -157,7 +157,7 @@ def render(project, directory, vault, settings, cancel, progress, process_regist
             name = f'clip-{i:02}-{k:02}.mp4'; clips.append(name)
             render_clip(project, directory, background, subtitle, name, duration,
                         round(scene_duration*30), cancel, process_register, offset,
-                        first=k==0, last=k==len(parts)-1)
+                        first=k==0 and i>0, last=k==len(parts)-1 and i<len(project['scenes'])-1)
             offset += round(duration*30)
         progress(40+int((i+1)/len(project['scenes'])*35), '사진 움직임·장면 전환 적용 중')
     (directory / 'clips.txt').write_text(''.join(f"file '{name}'\n" for name in clips), encoding='utf-8')
@@ -169,14 +169,14 @@ def render(project, directory, vault, settings, cancel, progress, process_regist
             for data in audio_chunks:
                 w.writeframes(data)
         args += ['-i', 'voice.wav']
-    from .daily import MUSIC
+    from .music import MUSIC, music_path as bundled_music_path, write_music_notices
     # Older news projects predate music_id; give them a usable soundtrack on
     # their next render. An explicit empty selection still means no music.
     music_id = project.get('music_id', 'slow-morning')
     track = next((item for item in MUSIC if item['id'] == music_id), None)
     from .custom_music import asset_path as music_asset_path, duration as music_duration
     custom_path = music_asset_path(assets, project['music_asset_id']) if project.get('music_asset_id') else None
-    music_path = custom_path or (RESOURCES / 'music' / (track['id'] + '.wav') if track else None)
+    music_path = custom_path or bundled_music_path(track)
     has_music = music_path is not None
     if has_music:
         track_duration = music_duration(music_path)
@@ -218,15 +218,33 @@ def render(project, directory, vault, settings, cancel, progress, process_regist
                 raise ValueError('FFmpeg 영상 생성에 실패했습니다. 카드 길이·설치 상태를 확인하세요.')
         finally:
             process_register(None)
+    thumbnail = write_thumbnail(project, directory, [sum(max(1, round(t[1]*30))/30 for t in timeline if t[2] == i) for i in range(len(project['scenes']))], cancel, process_register)
     with zipfile.ZipFile(directory / 'cards.zip', 'w', zipfile.ZIP_DEFLATED) as z:
         for path in sorted(directory.glob('card-*.png')):
             z.write(path, path.name)
     (directory / 'project.json').write_text(json.dumps(project, ensure_ascii=False, indent=2), encoding='utf-8')
+    write_music_notices(directory, project)
     return {'duration': round(cursor, 3), 'width': 1080, 'height': 1920, 'fps': 30,
-            'layout_version': 3, 'voice': project['voice'], 'music_id': track['id'] if track and not custom_path else '',
+            'layout_version': 4, 'music_notices': True, 'voice': project['voice'], 'music_id': track['id'] if track and not custom_path else '',
             'music_asset_id': project.get('music_asset_id', ''),
             'folder': directory.name, 'revision': project['revision'],
-            'sha256': file_hash(directory / 'video.mp4')}
+            'sha256': file_hash(directory / 'video.mp4'), **thumbnail}
+
+
+def write_thumbnail(project, directory, durations, cancel, process_register):
+    index = project.get('thumbnail_scene', 0)
+    if not 0 <= index < len(durations):
+        raise ValueError('썸네일로 사용할 장면을 선택하세요.')
+    moment = sum(durations[:index]) + durations[index] / 2
+    run_ffmpeg(['-ss', str(moment), '-i', 'video.mp4', '-frames:v', '1',
+                '-q:v', '2', 'thumbnail.jpg'], directory, cancel, process_register)
+    # Add cover art without changing the existing H.264 video/audio tracks.
+    run_ffmpeg(['-i', 'video.mp4', '-i', 'thumbnail.jpg', '-map', '0:v:0',
+                '-map', '0:a?', '-map', '1:v:0', '-c', 'copy',
+                '-disposition:v:1', 'attached_pic', '-movflags', '+faststart',
+                'covered-video.mp4'], directory, cancel, process_register)
+    (directory / 'covered-video.mp4').replace(directory / 'video.mp4')
+    return {'thumbnail': True, 'thumbnail_scene': index, 'thumbnail_time': round(moment, 3)}
 
 
 def file_hash(path):
@@ -335,7 +353,8 @@ def run_ffmpeg(args, directory, cancel, process_register, progress=None):
 
 
 def render_daily(project, directory, assets, cancel, progress, process_register):
-    from .daily import MUSIC, validate_photos
+    from .music import MUSIC, music_path as bundled_music_path, write_music_notices
+    from .daily import validate_photos
     validate_photos(project, assets)
     directory.mkdir(parents=True, exist_ok=True)
     cursor, srt, clips = 0., [], []
@@ -352,7 +371,8 @@ def render_daily(project, directory, assets, cancel, progress, process_register)
         name = f'clip-{i:02}.mp4'; clips.append(name)
         progress(5+int(i/len(project['photos'])*80), f'사진 {i+1}/{len(project["photos"])} 장면 제작 중')
         render_clip(project, directory, f'background-{i:02}.png', f'subtitle-{i:02}.png',
-                    name, duration, frames, cancel, process_register)
+                    name, duration, frames, cancel, process_register,
+                    first=i>0, last=i<len(project['photos'])-1)
         text=scene.get('narration', '').strip()
         if text:
             srt.append(f'{len(srt)+1}\n{timestamp(cursor)} --> {timestamp(cursor+duration)}\n{text}\n')
@@ -362,7 +382,7 @@ def render_daily(project, directory, assets, cancel, progress, process_register)
     track = next((t for t in MUSIC if t['id']==project.get('music_id')), None)
     from .custom_music import asset_path as music_asset_path, duration as music_duration
     custom_path = music_asset_path(assets, project['music_asset_id']) if project.get('music_asset_id') else None
-    music_path = custom_path or (RESOURCES/'music'/(track['id']+'.wav') if track else None)
+    music_path = custom_path or bundled_music_path(track)
     if music_path:
         track_duration = music_duration(music_path)
         offset = project.get('music_offset', 0) % track_duration
@@ -376,16 +396,16 @@ def render_daily(project, directory, assets, cancel, progress, process_register)
     progress(90, '음악과 자막 영상 합치는 중')
     run_ffmpeg(args, directory, cancel, process_register)
     (directory/'subtitles.srt').write_text('\n'.join(srt), encoding='utf-8')
+    thumbnail = write_thumbnail(project, directory, [round(s['duration']*30)/30 for s in project['scenes']], cancel, process_register)
     with zipfile.ZipFile(directory/'cards.zip', 'w', zipfile.ZIP_DEFLATED) as z:
         for path in sorted(directory.glob('card-*.png')):
             z.write(path,path.name)
     (directory/'project.json').write_text(json.dumps(project,ensure_ascii=False,indent=2),encoding='utf-8')
-    if track and not custom_path:
-        (directory/'music-license.txt').write_text(f'{track["title"]}\n{track["license"]}\n'+(RESOURCES/'music'/'LICENSE.md').read_text(),encoding='utf-8')
+    write_music_notices(directory, project)
     for pattern in ('background-*.png','subtitle-*.png','clip-*.mp4'):
         for path in directory.glob(pattern):
             path.unlink()
-    return {'duration':round(cursor,3),'width':1080,'height':1920,'fps':30,'voice':False,'layout_version':3,
+    return {'duration':round(cursor,3),'width':1080,'height':1920,'fps':30,'voice':False,'layout_version':4,'music_notices':True,
             'folder':directory.name,'revision':project['revision'],'music_id':project.get('music_id','') if not custom_path else '',
             'music_asset_id': project.get('music_asset_id', ''),
-            'sha256':file_hash(directory/'video.mp4')}
+            'sha256':file_hash(directory/'video.mp4'), **thumbnail}

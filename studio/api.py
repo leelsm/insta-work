@@ -345,11 +345,12 @@ def create_app(store=None, vault=None, session_token=None, stop_callback=None, a
 
     @app.get('/api/music/{track_id}')
     def music_preview(track_id: str):
-        from .daily import MUSIC
-        from .renderer import RESOURCES
-        if track_id not in {t['id'] for t in MUSIC}:
+        from .music import MUSIC, music_path
+        track = next((t for t in MUSIC if t['id'] == track_id), None)
+        if not track:
             raise HTTPException(404)
-        return FileResponse(RESOURCES / 'music' / (track_id + '.wav'), media_type='audio/wav')
+        path = music_path(track)
+        return FileResponse(path, media_type='audio/mpeg' if path.suffix == '.mp3' else 'audio/wav')
 
     @app.post('/api/custom-music')
     async def upload_custom_music(request: Request, filename: str = Query(min_length=1, max_length=150)):
@@ -524,9 +525,11 @@ def create_app(store=None, vault=None, session_token=None, stop_callback=None, a
     def generate_project(id: str, data: GenerateInput):
         with store.lock:
             p = current(id, data.revision)
+            if data.scene_index is not None and (p.get('content_type') != 'daily' or data.scene_index >= len(p['scenes'])):
+                raise ValueError('일상 영상에서 자막을 추천할 장면을 선택하세요.')
             from .model_status import generation_settings
             snapshot = generation_settings(store.settings(), vault.flags(), data.provider, data.model)
-            return jobs.start('generate', p, {'cards': data.cards, 'settings': snapshot})
+            return jobs.start('generate', p, {'cards': data.cards, 'settings': snapshot, 'scene_index': data.scene_index})
 
     @app.post('/api/projects/{id}/render')
     def render_project(id: str, data: RevisionInput):
@@ -611,12 +614,12 @@ def create_app(store=None, vault=None, session_token=None, stop_callback=None, a
 
     @app.get('/media/{project_id}/{folder}/{filename}')
     def media(project_id: str, folder: str, filename: str, download: bool = False):
-        if filename not in ('video.mp4', 'subtitles.srt', 'cards.zip', 'project.json', 'music-license.txt') and not (filename.startswith('card-') and filename.endswith('.png')):
+        if filename not in ('video.mp4', 'subtitles.srt', 'cards.zip', 'project.json', 'music-license.txt', 'posting-caption.txt', 'thumbnail.jpg') and not (filename.startswith('card-') and filename.endswith('.png')):
             raise HTTPException(404)
         p = (store.media / project_id / folder / filename).resolve()
         if not p.is_relative_to(store.media.resolve()) or not p.is_file():
             raise HTTPException(404)
-        types = {'video.mp4': 'video/mp4', 'subtitles.srt': 'application/x-subrip', 'cards.zip': 'application/zip', 'project.json': 'application/json', 'music-license.txt': 'text/plain; charset=utf-8'}
+        types = {'thumbnail.jpg': 'image/jpeg', 'video.mp4': 'video/mp4', 'subtitles.srt': 'application/x-subrip', 'cards.zip': 'application/zip', 'project.json': 'application/json', 'music-license.txt': 'text/plain; charset=utf-8', 'posting-caption.txt': 'text/plain; charset=utf-8'}
         return FileResponse(p, media_type=types.get(filename, 'image/png'), filename=filename if download else None)
 
     manuals = {

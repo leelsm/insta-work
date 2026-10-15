@@ -7,7 +7,7 @@ from .models import ProjectInput, SettingsInput
 from .renderer import file_hash
 from .storage import new_id, now
 
-FILES = ('video.mp4', 'cards.zip', 'subtitles.srt', 'project.json', 'music-license.txt')
+FILES = ('video.mp4', 'cards.zip', 'subtitles.srt', 'project.json', 'music-license.txt', 'posting-caption.txt', 'thumbnail.jpg')
 
 
 def backup(store):

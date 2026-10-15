@@ -4,7 +4,7 @@ import {createPortal} from 'react-dom'
 import {Maximize2,X} from 'lucide-react'
 import './video.css'
 
-export function VideoPreview({src}:{src:string}){
+export function VideoPreview({src,poster}:{src:string;poster?:string}){
  const [expanded,setExpanded]=useState(false)
  const inline=useRef<HTMLVideoElement>(null)
  useEffect(()=>{
@@ -25,12 +25,12 @@ export function VideoPreview({src}:{src:string}){
   window.addEventListener('studio-close-video',closeVideo)
   return()=>window.removeEventListener('studio-close-video',closeVideo)
  },[expanded])
- return <><video ref={inline} controls controlsList="nofullscreen" disablePictureInPicture playsInline src={src} preload="metadata"/>
+ return <><video ref={inline} controls controlsList="nofullscreen" disablePictureInPicture playsInline src={src} poster={poster} preload="none"/>
  <button type="button" className="btn video-expand" onClick={()=>{inline.current?.pause();setExpanded(true)}}><Maximize2 size={16}/>영상 크게 보기</button>
- {expanded&&<VideoDialog key={src} src={src} onClose={()=>setExpanded(false)}/>}</>
+ {expanded&&<VideoDialog key={src} src={src} poster={poster} onClose={()=>setExpanded(false)}/>}</>
 }
 
-function VideoDialog({src,onClose}:{src:string;onClose:()=>void}){
+function VideoDialog({src,poster,onClose}:{src:string;poster?:string;onClose:()=>void}){
  const titleId=useId()
  const dialog=useRef<HTMLDivElement>(null)
  const close=useRef<HTMLButtonElement>(null)
@@ -54,7 +54,7 @@ function VideoDialog({src,onClose}:{src:string;onClose:()=>void}){
    }
   }}>
    <div className="video-modal-heading"><h2 id={titleId}>완성 영상 확인</h2><button type="button" ref={close} className="icon-btn" aria-label="영상 닫기" title="영상 닫기" onClick={dismiss}><X size={22}/></button></div>
-   <video ref={video} tabIndex={0} controls controlsList="nofullscreen" disablePictureInPicture playsInline src={src} preload="metadata"/>
+   <video ref={video} tabIndex={0} controls controlsList="nofullscreen" disablePictureInPicture playsInline src={src} poster={poster} preload="none"/>
    <p>오른쪽 X 또는 Esc를 누르면 편집 화면으로 돌아갑니다.</p>
   </div>
  </div>,document.body)

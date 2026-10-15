@@ -14,6 +14,8 @@ from .storage import new_id, now
 def digest(project):
     fields = {k: project[k] for k in ('title', 'sources', 'scenes', 'caption', 'account_id', 'template', 'accent', 'brand', 'voice', 'tone', 'revision')}
     fields['logo'] = project.get('logo', '')
+    if project.get('thumbnail_scene', 0):
+        fields['thumbnail_scene'] = project['thumbnail_scene']
     for key in ('content_type', 'photos', 'mood', 'description', 'music_id', 'music_volume', 'music_offset', 'motion', 'transition', 'subtitle_style', 'subtitle_position'):
         fields[key] = project.get(key)
     for key, default in (('music_asset_id', ''), ('music_filename', ''), ('subtitle_x', .5),
@@ -47,6 +49,8 @@ class Jobs:
                 snapshot = options['settings']
                 provider = snapshot['llm_provider']
                 job.update(provider=provider, model=snapshot[FIELDS[provider][0]])
+                if options.get('scene_index') is not None:
+                    job['scene_index'] = options['scene_index']
             if kind == 'publish':
                 if not self.store.settings().get('allow_video_upload', False) or self.store.settings().get('privacy_mode') == 'local_only':
                     raise ValueError('영상 외부 업로드가 차단되어 있습니다. MP4를 내려받아 직접 게시하세요.')
@@ -107,16 +111,20 @@ class Jobs:
             if job['kind'] == 'generate':
                 progress(15, '제공 자료로 AI 카드 초안 생성 중')
                 if project.get('content_type') == 'daily':
-                    from .daily import generate_daily
-                    progress(15, '사진에 맞는 자막 제안 중')
-                    scenes, caption, usage = generate_daily(self.vault, settings, project, self.store.assets)
+                    from .daily import generate_daily, generate_daily_scene
+                    index = options.get('scene_index')
+                    progress(15, f'장면 {index+1} 사진의 자막 추천 중' if index is not None else '모든 사진에 맞는 자막 제안 중')
+                    if index is not None:
+                        scenes, caption, usage = generate_daily_scene(self.vault, settings, project, self.store.assets, index)
+                    else:
+                        scenes, caption, usage = generate_daily(self.vault, settings, project, self.store.assets)
                 else:
                     scenes, caption, usage = generate(self.vault, settings, project, options.get('cards', 5),
                         assets=self.store.assets,
                         progress=lambda i: progress(50 + i * 8, f'카드 {i+1} 관련 이미지 찾는 중'))
                 if cancel.is_set():
                     raise InterruptedError('초안 생성을 중단했습니다.')
-                project.update(scenes=scenes, caption=caption, revision=project['revision']+1, state='EDITABLE',
+                project.update(scenes=scenes, caption=caption, thumbnail_scene=min(project.get('thumbnail_scene', 0), len(scenes)-1), revision=project['revision']+1, state='EDITABLE',
                                approved_hash='', render=None, usage=usage, updated_at=now())
                 if job.get('provider'):
                     project['last_generation'] = {'provider': job['provider'], 'model': job['model']}
@@ -157,6 +165,10 @@ class Jobs:
             raise ValueError('영상 파일이 없거나 크기 한도를 넘습니다.')
         if not project['render'].get('sha256') or file_hash(path) != project['render']['sha256']:
             raise ValueError('렌더링 결과와 현재 영상 파일이 다릅니다. 다시 렌더링하고 승인하세요.')
+        from .music import posting_caption
+        caption = posting_caption(project)
+        if len(caption) > 2200:
+            raise ValueError('음악 출처를 포함한 게시 문안이 2200자를 넘습니다. 본문을 줄이세요.')
         progress(10, '승인한 영상을 임시 저장소에 업로드 중')
         pub['s3_key'] = f'instagram-studio/{pub["id"]}/video.mp4'
         self.store.put('publications', pub)
@@ -166,7 +178,7 @@ class Jobs:
         progress(35, 'Instagram 미디어 준비 요청 중')
         pub.update(stage='CONTAINER_SENT', updated_at=now())
         self.store.put('publications', pub)
-        data = meta.create(url, project['caption'])
+        data = meta.create(url, caption)
         pub.update(container_id=data['id'], status='PROCESSING', updated_at=now())
         self.store.put('publications', pub)
         for i in range(60):

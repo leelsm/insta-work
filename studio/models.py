@@ -39,9 +39,9 @@ class Photo(BaseModel):
 class ProjectInput(BaseModel):
     content_type: Literal['news', 'daily'] = 'news'
     photos: list[Photo] = Field(default_factory=list, max_length=10)
-    mood: Literal['일상', '여행', '카페', '음식', '운동', '산책'] = '일상'
+    mood: str = '일상'
     description: str = Field(default='', max_length=2000)
-    music_id: Literal['', 'slow-morning', 'little-weekend', 'after-hours'] = 'slow-morning'
+    music_id: str = 'slow-morning'
     music_asset_id: str = Field(default='', pattern=r'^(|[a-f0-9]{32})$')
     music_filename: str = Field(default='', max_length=150)
     music_volume: float = Field(default=0.35, ge=0, le=1)
@@ -59,6 +59,7 @@ class ProjectInput(BaseModel):
     title: str = Field(min_length=1, max_length=150)
     sources: list[Source] = Field(default_factory=list, max_length=20)
     scenes: list[Scene] = Field(min_length=1, max_length=12)
+    thumbnail_scene: int = Field(default=0, ge=0, le=11)
     caption: str = Field(default='', max_length=2200)
     account_id: str = Field(default='', max_length=100)
     template: Literal['ink', 'paper'] = 'ink'
@@ -67,6 +68,22 @@ class ProjectInput(BaseModel):
     logo: str = Field(default='', max_length=350000)
     voice: bool = False
     tone: str = Field(default='간결하고 사실 중심', max_length=150)
+
+    @field_validator('music_id')
+    @classmethod
+    def valid_music(cls, value):
+        from .music import MUSIC
+        if value and value not in {t['id'] for t in MUSIC}:
+            raise ValueError('앱 음악 목록에서 곡을 선택하세요.')
+        return value
+
+    @field_validator('mood')
+    @classmethod
+    def valid_mood(cls, value):
+        from .music import MOODS
+        if value not in MOODS:
+            raise ValueError('지원하는 분위기를 선택하세요.')
+        return value
 
     @field_validator('logo')
     @classmethod
@@ -91,6 +108,8 @@ class ProjectInput(BaseModel):
 
     @model_validator(mode='after')
     def check_sources(self):
+        if self.thumbnail_scene >= len(self.scenes):
+            raise ValueError('썸네일로 사용할 장면을 선택하세요.')
         if self.content_type == 'daily':
             if not 1 <= len(self.photos) <= 10 or len(self.photos) != len(self.scenes):
                 raise ValueError('일상 영상은 사진 1~10장과 같은 수의 장면이 필요합니다.')
@@ -161,6 +180,7 @@ class RevisionInput(BaseModel):
 class GenerateInput(BaseModel):
     revision: int = Field(ge=1)
     cards: int = Field(default=5, ge=3, le=10)
+    scene_index: int | None = Field(default=None, ge=0, le=9)
     provider: Provider | None = None
     model: str | None = Field(default=None, min_length=1, max_length=100, pattern=r'^\S+$')
 

@@ -56,6 +56,7 @@ def export_project(store, project):
         'id': project['id'], 'title': project['title'],
         'kind': 'daily' if project.get('content_type') == 'daily' else 'news',
         'scenes': scenes,
+        'thumbnailSceneID': scenes[project.get('thumbnail_scene', 0)]['id'],
         'sources': [{'title': s.get('title', ''), 'text': s.get('text', ''), 'url': s.get('url', ''),
                      'rights': s.get('rights', '')} for s in project.get('sources', [])],
         'caption': project.get('caption', ''), 'template': project.get('template', 'ink'),
@@ -155,7 +156,11 @@ def import_project(store, data):
             bytes_for(name, ('.ttf', '.otf'), 20_000_000), name)['asset_id']
     source_rows = [{'title': s['title'], 'text': s['text'], 'url': s.get('url', ''),
                     'rights': s.get('rights', '')} for s in raw.get('sources', [])]
-    incoming = {'content_type': kind, 'title': raw['title'], 'scenes': scenes, 'photos': photos,
+    thumbnail_id = raw.get('thumbnailSceneID')
+    thumbnail_scene = next((i for i, scene in enumerate(raw['scenes']) if scene.get('id') == thumbnail_id), None) if thumbnail_id else 0
+    if thumbnail_scene is None:
+        raise ValueError('썸네일 장면이 프로젝트에 없습니다.')
+    incoming = {'thumbnail_scene': thumbnail_scene, 'content_type': kind, 'title': raw['title'], 'scenes': scenes, 'photos': photos,
                 'sources': source_rows, 'caption': raw.get('caption', ''),
                 'template': raw.get('template', 'ink'), 'brand': raw.get('brand', 'STUDIO'),
                 'subtitle_x': raw.get('subtitleX', .5), 'subtitle_y': raw.get('subtitleY'),

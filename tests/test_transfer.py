@@ -1,16 +1,18 @@
 import json
+import pytest
 from pathlib import Path
 
 from test_daily import daily
 from test_studio import client, payload
 
 
-def test_mac_iphone_project_transfer_roundtrip(client):
+@pytest.mark.parametrize('music_id', ['little-weekend', 'dream-culture'])
+def test_mac_iphone_project_transfer_roundtrip(client, music_id):
     font = (Path(__file__).resolve().parent.parent / 'resources' / 'NotoSansKR.ttf').read_bytes()
     font_id = client.post('/api/fonts?filename=caption.ttf', content=font).json()['asset_id']
     original = daily(client, 1)
     original.update(subtitle_font_id=font_id, subtitle_font_name='caption.ttf',
-                    subtitle_x=.62, subtitle_y=.4, music_id='little-weekend', subtitle_size=76, motion='pan-left', transition='cut', music_offset=7.5, mood='여행', description='산책한 주말', tone='가볍고 유쾌하게')
+                    subtitle_x=.62, subtitle_y=.4, music_id=music_id, subtitle_size=76, motion='pan-left', transition='cut', music_offset=7.5, mood='여행', description='산책한 주말', tone='가볍고 유쾌하게')
     created = client.post('/api/projects', json=original)
     assert created.status_code == 200, created.text
     exported = client.get('/api/projects/' + created.json()['id'] + '/transfer')
@@ -27,7 +29,7 @@ def test_mac_iphone_project_transfer_roundtrip(client):
     assert copy['subtitle_x'] == .62
     assert copy['subtitle_font_id'] != font_id
     assert copy['photos'][0]['asset_id'] != original['photos'][0]['asset_id']
-    assert copy['music_id'] == 'little-weekend'
+    assert copy['music_id'] == music_id
     assert copy['subtitle_size'] == 76
     assert copy['motion'] == 'pan-left' and copy['transition'] == 'cut'
     assert copy['music_offset'] == 7.5 and copy['mood'] == '여행'

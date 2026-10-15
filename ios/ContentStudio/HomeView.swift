@@ -64,7 +64,7 @@ struct HomeView: View {
                                         Text(project.title).font(.headline).lineLimit(1)
                                         Text("\(project.scenes.count)장 · \(project.duration, specifier: "%.1f")초")
                                             .font(.caption).foregroundStyle(.secondary)
-                                        Text(project.lastVideo.isEmpty ? "이어서 편집" : "완성 영상 있음")
+                                        Text(project.lastVideo.isEmpty ? "이어서 편집" : (project.renderLayoutVersion ?? 0) >= VideoRenderer.layoutVersion ? "완성 영상 있음" : "영상 다시 만들기")
                                             .font(.caption2.weight(.medium)).foregroundStyle(.indigo)
                                     }
                                     Spacer(minLength: 0)
@@ -77,10 +77,10 @@ struct HomeView: View {
                         }.padding(14).background(.background, in: RoundedRectangle(cornerRadius: 18))
                     }
                     Button { showImporter = true } label: {
-                        Label("Mac에서 만든 일상 영상 가져오기", systemImage: "square.and.arrow.down")
+                        Label("PC 버전에서 가져오기", systemImage: "square.and.arrow.down")
                             .font(.subheadline).frame(maxWidth: .infinity).padding(.vertical, 8)
                     }.buttonStyle(.bordered)
-                    Text(".studio 파일로 사진·자막·음악·폰트·편집 설정을 함께 옮겨요.")
+                    Text("PC 버전에서 저장한 .studio 파일로 일상 영상의 사진·자막·음악·편집 설정을 가져와요.")
                         .font(.caption).foregroundStyle(.secondary)
                 }.padding(20)
             }
@@ -89,9 +89,9 @@ struct HomeView: View {
             .toolbar {
                 Menu {
                     Button("AI 자막 연결", systemImage: "sparkles") { showSettings = true }
-                    Button("일상 영상 가져오기", systemImage: "square.and.arrow.down") { showImporter = true }
+                    Button("PC 버전에서 가져오기", systemImage: "square.and.arrow.down") { showImporter = true }
                     if store.projects.contains(where: { !$0.isDaily }) {
-                        Button("이전 카드 프로젝트를 Mac으로 보내기", systemImage: "desktopcomputer") { showLegacy = true }
+                        Button("이전 카드 프로젝트를 PC 버전으로 보내기", systemImage: "desktopcomputer") { showLegacy = true }
                     }
                 } label: { Image(systemName: "gearshape").frame(width: 44, height: 44) }.accessibilityLabel("앱 설정")
             }
@@ -118,11 +118,11 @@ struct HomeView: View {
             .sheet(isPresented: $showLegacy) {
                 NavigationStack {
                     List {
-                        Section { Text("이전 카드 프로젝트는 파일로 저장해 Mac에서 이어서 편집하세요.").font(.subheadline) }
+                        Section { Text("이전 카드 프로젝트는 파일로 저장해 PC 버전 Content Studio에서 이어서 편집하세요.").font(.subheadline) }
                         ForEach(store.projects.filter { !$0.isDaily }) { project in
                             Button(project.title) { do { legacyURL = try store.exportTransfer(project) } catch { self.error = error.localizedDescription } }
                         }
-                        if let legacyURL { ShareLink(item: legacyURL) { Label("Mac으로 프로젝트 보내기", systemImage: "square.and.arrow.up") } }
+                        if let legacyURL { ShareLink(item: legacyURL) { Label("PC 버전으로 프로젝트 보내기", systemImage: "square.and.arrow.up") } }
                     }.navigationTitle("이전 프로젝트").toolbar { Button("완료") { showLegacy = false } }
                 }
             }
@@ -139,7 +139,7 @@ struct HomeView: View {
             .onAppear {
                 if let project = MobileVerification.previewProject(store: store) {
                     if ProcessInfo.processInfo.arguments.contains("--preview-daily-create") { path = [.newProject] }
-                    else if ProcessInfo.processInfo.arguments.contains("--preview-daily-editor") { path = [.savedProject(project.id)] }
+                    else if (ProcessInfo.processInfo.arguments.contains("--preview-daily-editor") || ProcessInfo.processInfo.arguments.contains("--verify-export-ui")) { path = [.savedProject(project.id)] }
                 }
             }
             #endif
@@ -147,7 +147,7 @@ struct HomeView: View {
     }
 
     @ViewBuilder private func thumbnail(_ project: StudioProject) -> some View {
-        if let scene = project.scenes.first, let image = store.image(scene.photoID) { Image(uiImage: image).resizable().scaledToFill() }
+        if let scene = project.thumbnailScene { StudioPhotoThumbnail(url: store.assets.appendingPathComponent(scene.photoID), width: 64, height: 82).equatable() }
         else { Color.indigo.opacity(0.1).overlay(Image(systemName: "photo").foregroundStyle(.indigo)) }
     }
 }
@@ -161,7 +161,7 @@ private struct DailyCreateView: View {
     @State private var step = 1
     @State private var importing = false
     @State private var error = ""
-    private let moods = ["일상", "여행", "카페", "음식", "운동", "산책"]
+    private let moods = MusicLibrary.moods
 
     var body: some View {
         ScrollView {
@@ -239,7 +239,7 @@ private struct DailyCreateView: View {
     }
 
     private func finish(_ withAI: Bool) {
-        project.musicID = ["여행", "음식"].contains(project.effectiveMood) ? "little-weekend" : ["산책", "운동"].contains(project.effectiveMood) ? "after-hours" : "slow-morning"
+        project.musicID = MusicLibrary.recommended(project.effectiveMood).first?.id ?? "slow-morning"
         if project.title.trimmingCharacters(in: .whitespaces).isEmpty { project.title = "\(project.effectiveMood)의 순간" }
         onCreated(project, withAI)
     }

@@ -158,6 +158,21 @@ enum AIService {
         return content
     }
 
+    static func sceneProject(_ project: StudioProject, sceneID: String) throws -> StudioProject {
+        guard project.isDaily, let scene = project.scenes.first(where: { $0.id == sceneID }) else {
+            throw StudioError.invalidFile("자막을 추천할 사진 장면을 선택하세요.")
+        }
+        var selected = project; selected.scenes = [scene]; selected.sources = []; selected.caption = ""
+        return selected
+    }
+
+    static func suggestScene(project: StudioProject, sceneID: String, provider: String, model: String,
+                             endpoint: String, key: String, assets: URL) async throws -> String {
+        let selected = try sceneProject(project, sceneID: sceneID)
+        return try await suggest(project: selected, provider: provider, model: model,
+                                 endpoint: endpoint, key: key, assets: assets).scenes[0].narration
+    }
+
     static func suggest(project: StudioProject, provider: String, model: String,
                         endpoint: String, key: String, assets: URL? = nil) async throws -> Suggestion {
         guard !key.isEmpty else { throw StudioError.invalidFile("먼저 API 키를 등록하세요.") }

@@ -7,6 +7,7 @@ import UIKit
 enum VideoRenderer {
     static let size = CGSize(width: 1080, height: 1920)
     static let fps: Int32 = 30
+    static let layoutVersion = 4
 
     static func render(_ project: StudioProject, assets: URL, exports: URL,
                        progress: @escaping @Sendable (Double, String) -> Void) async throws -> URL {
@@ -16,25 +17,47 @@ enum VideoRenderer {
             let result = exports.appendingPathComponent(project.id + "-" + UUID().uuidString + ".mp4")
             try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
             do {
-                try await encodeVideo(project, assets: assets, output: silent, progress: progress)
+                let jpeg = try autoreleasepool {
+                    let image = try thumbnailImage(project, assets: assets)
+                    guard let data = image.jpegData(compressionQuality: 0.9) else { throw StudioError.render("썸네일 이미지를 만들 수 없습니다.") }
+                    return data
+                }
+                try jpeg.write(to: thumbnailURL(for: result), options: .atomic)
+                let metadata = thumbnailMetadata(jpeg)
+                try await encodeVideo(project, assets: assets, output: silent, metadata: metadata, progress: progress)
                 try Task.checkCancellation()
                 if let music = musicURL(project, assets: assets) {
                     progress(0.92, "배경음악 합치는 중")
                     try await addMusic(music, to: silent, output: result,
-                                       volume: Float(project.musicVolume), offset: project.effectiveMusicOffset)
+                                       volume: Float(project.musicVolume), offset: project.effectiveMusicOffset, metadata: metadata)
                     try? FileManager.default.removeItem(at: silent)
                 } else {
                     try FileManager.default.moveItem(at: silent, to: result)
                 }
+                try Task.checkCancellation()
                 progress(1, "영상 제작 완료")
                 return result
             } catch {
                 try? FileManager.default.removeItem(at: silent)
                 try? FileManager.default.removeItem(at: result)
+                try? FileManager.default.removeItem(at: thumbnailURL(for: result))
                 throw error
             }
         }
         return try await withTaskCancellationHandler(operation: { try await job.value }, onCancel: { job.cancel() })
+    }
+
+    static func thumbnailURL(for video: URL) -> URL { video.deletingPathExtension().appendingPathExtension("jpg") }
+    static func thumbnailImage(_ project: StudioProject, assets: URL) throws -> UIImage {
+        guard let scene = project.thumbnailScene else { throw StudioError.render("썸네일 장면을 선택하세요.") }
+        return try frame(project, scene: scene, index: project.thumbnailIndex, assets: assets, progress: 0.5)
+    }
+    private static func thumbnailMetadata(_ data: Data) -> [AVMetadataItem] {
+        let item = AVMutableMetadataItem()
+        item.identifier = .iTunesMetadataCoverArt
+        item.value = data as NSData
+        item.dataType = kCMMetadataBaseDataType_JPEG as String
+        return [item]
     }
 
     static func musicURL(_ project: StudioProject, assets: URL) -> URL? {
@@ -42,12 +65,17 @@ enum VideoRenderer {
             let url = assets.appendingPathComponent(project.musicAssetID)
             return FileManager.default.fileExists(atPath: url.path) ? url : nil
         }
-        return project.musicID.isEmpty ? nil : Bundle.main.url(forResource: project.musicID, withExtension: "wav")
+        guard !project.musicID.isEmpty else { return nil }
+        if let track = MusicLibrary.tracks.first(where: { $0.id == project.musicID }) {
+            return Bundle.main.url(forResource: track.filename, withExtension: nil, subdirectory: "music")
+        }
+        return Bundle.main.url(forResource: project.musicID, withExtension: "wav")
     }
 
     private static func encodeVideo(_ project: StudioProject, assets: URL, output: URL,
-                                    progress: @escaping @Sendable (Double, String) -> Void) async throws {
+                                    metadata: [AVMetadataItem], progress: @escaping @Sendable (Double, String) -> Void) async throws {
         let writer = try AVAssetWriter(outputURL: output, fileType: .mp4)
+        writer.metadata = metadata
         let settings: [String: Any] = [AVVideoCodecKey: AVVideoCodecType.h264,
                                       AVVideoWidthKey: Int(size.width), AVVideoHeightKey: Int(size.height),
                                       AVVideoCompressionPropertiesKey: [AVVideoAverageBitRateKey: 6_000_000]]
@@ -63,6 +91,9 @@ enum VideoRenderer {
         writer.add(input)
         guard writer.startWriting() else { throw writer.error ?? StudioError.render("영상 작성을 시작하지 못했습니다.") }
         writer.startSession(atSourceTime: .zero)
+        // Cancel the writer on every early exit, including user cancellation.
+        defer { if writer.status == .writing { writer.cancelWriting() } }
+        guard let pool = adaptor.pixelBufferPool else { throw StudioError.render("영상 프레임 메모리를 준비하지 못했습니다.") }
         var frameNumber: Int64 = 0
         let totalFrames = max(1, project.scenes.reduce(0) { $0 + Int64(($1.duration * Double(fps)).rounded()) })
         for (index, scene) in project.scenes.enumerated() {
@@ -73,17 +104,23 @@ enum VideoRenderer {
                 try Task.checkCancellation()
                 while !input.isReadyForMoreMediaData {
                     try Task.checkCancellation()
+                    guard writer.status == .writing else { throw writer.error ?? StudioError.render("영상 작성을 계속할 수 없습니다.") }
                     try await Task.sleep(nanoseconds: 10_000_000)
                 }
-                let elapsed = Double(sceneFrame) / Double(fps)
-                let outputImage = try frame(project, scene: scene, index: index, assets: assets,
-                                            progress: elapsed / scene.duration, elapsed: elapsed)
-                guard let buffer = pixelBuffer(outputImage) else { throw StudioError.render("영상 프레임을 만들지 못했습니다.") }
-                let time = CMTime(value: frameNumber, timescale: fps)
-                guard adaptor.append(buffer, withPresentationTime: time) else {
-                    throw writer.error ?? StudioError.render("영상 프레임을 저장하지 못했습니다.")
+                // Drain UIKit temporaries every frame rather than retaining them for
+                // the entire detached task. Reuse the encoder's pixel buffer pool.
+                try autoreleasepool {
+                    let elapsed = Double(sceneFrame) / Double(fps)
+                    let outputImage = try frame(project, scene: scene, index: index, assets: assets,
+                                                progress: elapsed / scene.duration, elapsed: elapsed)
+                    guard let buffer = pixelBuffer(outputImage, pool: pool) else { throw StudioError.render("영상 프레임을 만들지 못했습니다.") }
+                    let time = CMTime(value: frameNumber, timescale: fps)
+                    guard adaptor.append(buffer, withPresentationTime: time) else {
+                        throw writer.error ?? StudioError.render("영상 프레임을 저장하지 못했습니다.")
+                    }
                 }
                 frameNumber += 1
+                if frameNumber % Int64(fps) == 0 { progress(Double(frameNumber) / Double(totalFrames) * 0.9, "장면 \(index + 1)/\(project.scenes.count) 제작 중") }
             }
         }
         input.markAsFinished()
@@ -95,12 +132,9 @@ enum VideoRenderer {
         }
     }
 
-    private static func pixelBuffer(_ image: UIImage) -> CVPixelBuffer? {
+    private static func pixelBuffer(_ image: UIImage, pool: CVPixelBufferPool) -> CVPixelBuffer? {
         var buffer: CVPixelBuffer?
-        let attrs: [String: Any] = [kCVPixelBufferCGImageCompatibilityKey as String: true,
-                                    kCVPixelBufferCGBitmapContextCompatibilityKey as String: true]
-        guard CVPixelBufferCreate(kCFAllocatorDefault, Int(size.width), Int(size.height),
-                                  kCVPixelFormatType_32BGRA, attrs as CFDictionary, &buffer) == kCVReturnSuccess,
+        guard CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &buffer) == kCVReturnSuccess,
               let buffer, let cgImage = image.cgImage else { return nil }
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
@@ -159,30 +193,40 @@ enum VideoRenderer {
         drawText(text, rect: box.insetBy(dx: 28, dy: 22), size: fontSize, color: color, font: face)
     }
 
-    private static let backgrounds = NSCache<NSString, UIImage>()
+    private static let backgrounds: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 32_000_000
+        cache.countLimit = 16
+        return cache
+    }()
 
-    private static func background(_ scene: StudioScene, assets: URL) -> UIImage? {
-        let key = "\(assets.path)/\(scene.photoID)/\(scene.photoFit)/\(scene.positionX)/\(scene.positionY)" as NSString
+    private static func background(_ scene: StudioScene, assets: URL, pixelWidth: CGFloat) -> UIImage? {
+        let renderSize = CGSize(width: pixelWidth, height: pixelWidth * 16 / 9)
+        let key = "\(assets.path)/\(scene.photoID)/\(scene.photoFit)/\(scene.positionX)/\(scene.positionY)/\(Int(pixelWidth))" as NSString
         if let image = backgrounds.object(forKey: key) { return image }
         guard let photo = UIImage(contentsOfFile: assets.appendingPathComponent(scene.photoID).path) else { return nil }
-        let format = UIGraphicsImageRendererFormat(); format.scale = 1
-        let image = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.preferredRange = .standard; format.opaque = true
+        let image = UIGraphicsImageRenderer(size: renderSize, format: format).image { _ in
             UIColor(red: 0.08, green: 0.08, blue: 0.1, alpha: 1).setFill()
-            UIRectFill(CGRect(origin: .zero, size: size))
-            let ratio = scene.photoFit == "contain" ? min(size.width / photo.size.width, size.height / photo.size.height) : max(size.width / photo.size.width, size.height / photo.size.height)
+            UIRectFill(CGRect(origin: .zero, size: renderSize))
+            let ratio = scene.photoFit == "contain" ? min(renderSize.width / photo.size.width, renderSize.height / photo.size.height) : max(renderSize.width / photo.size.width, renderSize.height / photo.size.height)
             let target = CGSize(width: photo.size.width * ratio, height: photo.size.height * ratio)
-            let x = (size.width - target.width) * (scene.photoFit == "contain" ? 0.5 : scene.positionX)
-            let y = (size.height - target.height) * (scene.photoFit == "contain" ? 0.5 : scene.positionY)
+            let x = (renderSize.width - target.width) * (scene.photoFit == "contain" ? 0.5 : scene.positionX)
+            let y = (renderSize.height - target.height) * (scene.photoFit == "contain" ? 0.5 : scene.positionY)
             photo.draw(in: CGRect(x: x, y: y, width: target.width, height: target.height))
         }
-        backgrounds.totalCostLimit = 90_000_000
-        backgrounds.setObject(image, forKey: key, cost: Int(size.width * size.height * 4))
+        let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? Int(renderSize.width * renderSize.height * 4)
+        backgrounds.setObject(image, forKey: key, cost: cost)
         return image
     }
 
     static func frame(_ project: StudioProject, scene: StudioScene, index: Int, assets: URL,
                       progress: Double = 0, elapsed: Double? = nil, outputSize: CGSize? = nil) throws -> UIImage {
+        let pixelWidth = min(size.width, max(1, (outputSize?.width ?? size.width) * (outputSize == nil ? 1 : 3)))
+        let photo = background(scene, assets: assets, pixelWidth: pixelWidth)
+        if project.isDaily && photo == nil { throw StudioError.invalidFile("장면 \(index + 1)의 사진이 없습니다. 사진을 다시 선택해주세요.") }
         let format = UIGraphicsImageRendererFormat(); format.scale = outputSize == nil ? 1 : 3
+        format.preferredRange = .standard; format.opaque = true
         let targetSize = outputSize ?? size
         let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
         return renderer.image { context in
@@ -190,7 +234,7 @@ enum VideoRenderer {
             (project.template == "ink" ? UIColor(red: 0.09, green: 0.11, blue: 0.14, alpha: 1) :
                 UIColor(red: 0.96, green: 0.94, blue: 0.9, alpha: 1)).setFill()
             UIRectFill(CGRect(origin: .zero, size: size))
-            if let photo = background(scene, assets: assets) {
+            if let photo {
                 let p = CGFloat(min(1, max(0, progress)))
                 let motion = project.effectiveMotion
                 let zoom: CGFloat = motion == "zoom" ? 1 + 0.045 * p : motion == "zoom-out" ? 1 + 0.045 * (1-p) : motion.hasPrefix("pan-") ? 1.045 : 1
@@ -207,14 +251,21 @@ enum VideoRenderer {
             caption(text, project: project, assets: assets)
             if let credit = scene.imageCredit, !credit.isEmpty {
                 UIColor.black.withAlphaComponent(0.8).setFill()
-                UIRectFill(CGRect(x: 68, y: 1785, width: 944, height: 75))
+                UIRectFillUsingBlendMode(CGRect(x: 68, y: 1785, width: 944, height: 75), .normal)
                 drawText(credit, rect: CGRect(x: 85, y: 1800, width: 910, height: 45), size: 24,
                          color: .white, font: .systemFont(ofSize: 24))
             }
             if project.effectiveTransition == "fade", let elapsed {
-                let opacity = max(0, min(1, elapsed / 0.25, (scene.duration-elapsed)/0.25))
-                UIColor.black.withAlphaComponent(1-opacity).setFill()
-                UIRectFill(CGRect(origin: .zero, size: size))
+                // Fade between scenes. Keep the first/last exported frames visible
+                // so Photos and messaging previews do not pick a black frame.
+                let fadeIn = index == 0 ? 1 : elapsed / 0.25
+                let fadeOut = index == project.scenes.count - 1 ? 1 : (scene.duration-elapsed)/0.25
+                let opacity = max(0, min(1, fadeIn, fadeOut))
+                if opacity < 1 {
+                    UIColor.black.withAlphaComponent(1-opacity).setFill()
+                    // UIRectFill uses .copy and erases the photo, even at alpha 0.
+                    UIRectFillUsingBlendMode(CGRect(origin: .zero, size: size), .normal)
+                }
             }
         }
     }
@@ -237,7 +288,7 @@ enum VideoRenderer {
     }
 
     private static func addMusic(_ musicURL: URL, to videoURL: URL, output: URL,
-                                 volume: Float, offset: Double = 0) async throws {
+                                 volume: Float, offset: Double = 0, metadata: [AVMetadataItem]) async throws {
         let video = AVURLAsset(url: videoURL)
         let audio = AVURLAsset(url: musicURL)
         guard let videoSource = try await video.loadTracks(withMediaType: .video).first,
@@ -280,11 +331,16 @@ enum VideoRenderer {
         session.outputURL = output
         session.outputFileType = .mp4
         session.audioMix = mix
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            session.exportAsynchronously {
-                if session.status == .completed { continuation.resume() }
-                else { continuation.resume(throwing: session.error ?? StudioError.render("배경음악 합치기에 실패했습니다.")) }
+        session.metadata = metadata
+        try await withTaskCancellationHandler(operation: {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                session.exportAsynchronously {
+                    if session.status == .completed { continuation.resume() }
+                    else if session.status == .cancelled { continuation.resume(throwing: CancellationError()) }
+                    else { continuation.resume(throwing: session.error ?? StudioError.render("배경음악 합치기에 실패했습니다.")) }
+                }
             }
-        }
+        }, onCancel: { session.cancelExport() })
     }
 }
