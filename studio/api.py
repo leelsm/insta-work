@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from starlette.background import BackgroundTask
 
 from .adapters import Meta, client, json_response, require_openai, search_news, speech
@@ -78,13 +79,19 @@ def create_app(store=None, vault=None, session_token=None, stop_callback=None, a
 
     @app.exception_handler(ValueError)
     async def invalid(request, exc):
+        if isinstance(exc, ValidationError):
+            # pydantic's raw text is English and echoes the submitted input.
+            return JSONResponse({'detail': '입력값의 길이·형식을 확인하세요.'}, 400)
         return JSONResponse({'detail': str(exc)}, 400)
 
     @app.exception_handler(RequestValidationError)
     async def validation(request, exc):
         # Default validation errors echo submitted input, including credentials.
-        return JSONResponse({'detail': '입력값의 길이·형식 또는 출처 번호를 확인하세요.',
-            'fields': [list(e['loc']) for e in exc.errors()]}, 422)
+        errors = exc.errors()
+        messages = [str(e['ctx'].get('error', '')) for e in errors
+                    if e.get('type') == 'value_error' and isinstance(e.get('ctx'), dict)]
+        detail = next((m for m in messages if m), '입력값의 길이·형식 또는 출처 번호를 확인하세요.')
+        return JSONResponse({'detail': detail, 'fields': [list(e['loc']) for e in errors]}, 422)
 
     @app.exception_handler(KeyError)
     async def missing(request, exc):

@@ -40,7 +40,9 @@ def save_music(assets, data, filename):
     extension = Path(name).suffix.lower()
     if extension not in EXTENSIONS:
         raise ValueError('MP3, M4A, WAV 음악 파일을 선택하세요.')
-    if not data or len(data) > MAX_BYTES:
+    if not data:
+        raise ValueError('빈 파일입니다. 다른 파일을 선택하세요.')
+    if len(data) > MAX_BYTES:
         raise ValueError('음악 파일은 25MB 이하여야 합니다.')
     assets.mkdir(parents=True, exist_ok=True)
     asset_id = new_id()

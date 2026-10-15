@@ -30,6 +30,10 @@ struct HomeView: View {
                         Text("사진을 고르고, 자막과 음악을 더하면 완성.")
                             .font(.subheadline).foregroundStyle(.secondary)
                     }.padding(.top, 12)
+                    if let issue = store.loadIssue {
+                        Label(issue, systemImage: "exclamationmark.triangle.fill").font(.footnote).foregroundStyle(.orange)
+                            .accessibilityIdentifier("store-load-issue")
+                    }
                     Button { path.append(.newProject) } label: {
                         HStack(spacing: 16) {
                             Image(systemName: "photo.stack.fill").font(.system(size: 30)).frame(width: 58, height: 64)
@@ -185,7 +189,9 @@ private struct DailyCreateView: View {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                         ForEach(Array(project.scenes.enumerated()), id: \.element.id) { index, scene in
                             VStack(spacing: 0) {
-                                if let image = store.image(scene.photoID) { Image(uiImage: image).resizable().scaledToFill().frame(height: 145).clipped() }
+                                GeometryReader { geometry in
+                                    StudioPhotoThumbnail(url: store.assets.appendingPathComponent(scene.photoID), width: geometry.size.width, height: 145).equatable()
+                                }.frame(height: 145)
                                 HStack {
                                     Text("\(index+1)").font(.caption.bold())
                                     Spacer()
@@ -202,7 +208,7 @@ private struct DailyCreateView: View {
                     Text("\(project.scenes.count)장을 선택했어요. 이 내용은 AI 자막을 제안할 때도 참고해요.").font(.subheadline).foregroundStyle(.secondary)
                     GroupBox {
                         VStack(alignment: .leading, spacing: 16) {
-                            TextField("영상 제목", text: $project.title).textFieldStyle(.roundedBorder)
+                            TextField("영상 제목", text: Binding(get: { project.title }, set: { project.title = StudioProject.limited($0, StudioProject.titleLimit) })).textFieldStyle(.roundedBorder)
                             Picker("분위기", selection: Binding(get: { project.effectiveMood }, set: { project.mood = $0 })) { ForEach(moods, id: \.self) { Text($0).tag($0) } }
                             Text("한 줄 설명").font(.subheadline.bold())
                             TextField("예: 친구와 카페에서 보낸 느긋한 주말", text: Binding(get: { project.effectiveDescription }, set: { project.description = String($0.prefix(2000)) }), axis: .vertical).lineLimit(3...5)
@@ -251,7 +257,8 @@ private struct DailyCreateView: View {
         for item in items.prefix(10-project.scenes.count) {
             do {
                 guard let data = try await item.loadTransferable(type: Data.self) else { continue }
-                let id = try store.importPhoto(data)
+                let jpeg = try await Task.detached(priority: .userInitiated) { try StudioStore.preparePhoto(data) }.value
+                let id = try store.registerPhoto(jpeg)
                 project.scenes.append(StudioScene(title: "사진 \(project.scenes.count+1)", photoID: id))
             } catch { self.error = error.localizedDescription }
         }

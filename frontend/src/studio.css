@@ -46,7 +46,7 @@ body,.app-shell{background:var(--studio-bg);color:var(--ux-ink)}.app-shell{--nav
 .work-status-end .btn{font-size:11px;padding:8px 10px}
 @keyframes work-slide{0%{transform:translateX(-110%)}100%{transform:translateX(300%)}}
 .spin-slow{animation:spin 2s linear infinite}
-.subtitle-controls{margin:16px 0;padding:15px;border:1px solid var(--border,#ddd);border-radius:9px;background:var(--surface,#f8f7f8)}
+.subtitle-controls{margin:16px 0;padding:15px;border:1px solid var(--border,#ddd);border-radius:9px;background:var(--surface,#f8f7f8);color:var(--text)}
 .subtitle-controls-title{display:flex;align-items:center;gap:8px;font-size:12px}
 .subtitle-controls p{font-size:10px;line-height:1.65;color:var(--muted,#777);margin:8px 0 12px}
 .subtitle-controls-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}

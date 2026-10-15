@@ -8,6 +8,7 @@ export function MusicPicker({project,onChange}:{project:Project;onChange:(fields
  const player=useRef<HTMLAudioElement>(null)
  useEffect(()=>{setAudio('');setExpanded(false)},[project.id,project.mood,project.music_id,project.music_asset_id])
  useEffect(()=>{if(player.current)player.current.volume=project.music_volume??.35},[audio,project.music_volume])
+ useEffect(()=>{const a=player.current;if(a&&a.duration>0)a.currentTime=(project.music_offset||0)%a.duration},[project.music_offset])
  const recommended=recommendedMusic(project.mood||'일상')
  const selected=musicTracks.find(t=>t.id===project.music_id)
  const tracks=expanded?musicTracks:[...recommended,...(selected&&!recommended.some(t=>t.id===selected.id)&&!project.music_asset_id?[selected]:[])]

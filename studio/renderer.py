@@ -34,32 +34,68 @@ def font(size, custom_path=''):
     raise ValueError('한글 폰트가 없습니다. resources/NotoSansKR.ttf를 설치하세요.')
 
 
+# Punctuation that must not start a line; it joins the end of the previous line.
+NO_LINE_START = '.,!?)]}"\'」』”’…·:;%。、，！？）'
+
+
+def _split_long(token, f, width):
+    pieces, current = [], ''
+    for char in token:
+        if current and f.getlength(current + char) > width:
+            pieces.append(current)
+            current = char
+        else:
+            current += char
+    return pieces + [current]
+
+
 def wrap(text, f, width):
     lines = []
     for paragraph in text.split('\n'):
         current = ''
-        for char in paragraph:
-            if current and f.getlength(current + char) > width:
-                lines.append(current.rstrip())
-                current = char.lstrip()
-            else:
-                current += char
-        lines.append(current.rstrip())
+        for word in paragraph.split():
+            pieces = [word] if f.getlength(word) <= width else _split_long(word, f, width)
+            for k, piece in enumerate(pieces):
+                candidate = (current + (' ' if current and k == 0 else '') + piece) if current else piece
+                if not current or f.getlength(candidate) <= width:
+                    current = candidate
+                    continue
+                # A whole word that starts with a quote ("좋은) is an opening mark, so it
+                # stays intact; detached marks and split-word remainders move up.
+                if piece[0] in NO_LINE_START and (k > 0 or not piece.strip(NO_LINE_START)):
+                    # Keep leading punctuation on the previous line (kinsoku).
+                    head = len(piece) - len(piece.lstrip(NO_LINE_START))
+                    current += piece[:head]
+                    piece = piece[head:]
+                    if not piece:
+                        continue
+                lines.append(current)
+                current = piece
+        lines.append(current)
     return lines or ['']
 
 
-def fit(draw, text, box, size, minimum, color, font_path=''):
-    x, y, width, height = box
+def layout(text, box, size, minimum, font_path=''):
+    """Pick the largest font that fits the box; returns (font, lines, step)."""
+    _, _, width, height = box
     for candidate in range(size, minimum - 1, -2):
         f = font(candidate, font_path)
         lines = wrap(text, f, width)
         step = math.ceil(candidate * 1.48)
         if step * len(lines) <= height:
-            for line in lines:
-                draw.text((x, y), line, font=f, fill=color)
-                y += step
-            return
+            return f, lines, step
     raise ValueError('카드 글자가 안전 영역을 넘습니다. 제목·본문을 줄이거나 카드를 나눠 주세요.')
+
+
+def draw_lines(draw, lines, f, step, x, y, color):
+    for line in lines:
+        draw.text((x, y), line, font=f, fill=color)
+        y += step
+
+
+def fit(draw, text, box, size, minimum, color, font_path=''):
+    f, lines, step = layout(text, box, size, minimum, font_path)
+    draw_lines(draw, lines, f, step, box[0], box[1], color)
 
 
 def card(project, scene, index, subtitle=None, assets=None):
@@ -102,6 +138,27 @@ def chunks(text, limit=64):
     return result or ['']
 
 
+def chunk_durations(parts, total, minimum=0.8):
+    """Split a card's duration across subtitle chunks by their length (not count)."""
+    if not parts:
+        return []
+    if total <= minimum * len(parts):
+        return [total / len(parts)] * len(parts)
+    weights = [max(4, len(re.sub(r'\s', '', part))) for part in parts]
+    fixed = set()
+    while True:
+        free = total - minimum * len(fixed)
+        free_weight = sum(w for i, w in enumerate(weights) if i not in fixed)
+        result = [minimum if i in fixed else free * w / free_weight for i, w in enumerate(weights)]
+        short = {i for i, value in enumerate(result) if i not in fixed and value < minimum}
+        if not short:
+            break
+        fixed |= short
+    # Absorb floating-point drift so the chunks add up to the card duration exactly.
+    result[-1] += total - sum(result)
+    return result
+
+
 def timestamp(seconds):
     milliseconds = round(seconds * 1000)
     h, milliseconds = divmod(milliseconds, 3600000)
@@ -121,10 +178,11 @@ def render(project, directory, vault, settings, cancel, progress, process_regist
             raise InterruptedError('렌더링을 취소했습니다.')
         card(project, scene, i, assets=assets).save(directory / f'card-{i+1:02}.png')
         parts = chunks(scene['narration'] or scene['body'] or scene['title'])
+        planned = chunk_durations(parts, scene['duration'])
         for k, part in enumerate(parts):
             if cancel.is_set():
                 raise InterruptedError('렌더링을 취소했습니다.')
-            duration = scene['duration'] / len(parts)
+            duration = planned[k]
             if project['voice']:
                 wav = speech(vault, settings, part)
                 with wave.open(io.BytesIO(wav), 'rb') as w:
@@ -290,11 +348,13 @@ def caption_layer(project, text, assets=None, default_y=.76):
     width = max(320, min(930, int(max(face.getlength(line) for line in lines) + 100)))
     height = min(1200, max(125, math.ceil(size * 1.48) * len(lines) + 56))
     x, y = subtitle_box(project, width, height, default_y)
+    # One layout drives both the shadow and the text so their line breaks always match.
+    f, text_lines, step = layout(text, (x+25, y+28, width-50, height-56), size, min(size, 24), font_path)
     if project.get('subtitle_style', 'box') == 'box':
         d.rounded_rectangle((x, y, x+width, y+height), radius=24, fill=(8, 9, 13, 190))
     else:
-        fit(d, text, (x+28, y+31, width-56, height-56), size, min(size, 24), (0, 0, 0, 210), font_path)
-    fit(d, text, (x+25, y+28, width-50, height-56), size, min(size, 24), '#ffffff', font_path)
+        draw_lines(d, text_lines, f, step, x+28, y+31, (0, 0, 0, 210))
+    draw_lines(d, text_lines, f, step, x+25, y+28, '#ffffff')
     return image
 
 

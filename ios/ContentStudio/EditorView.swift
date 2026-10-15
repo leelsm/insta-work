@@ -66,7 +66,7 @@ struct EditorView: View {
         GeometryReader { geometry in
             VStack(spacing: 12) {
                 HStack {
-                    TextField("영상 제목", text: binding(\.title)).font(.headline).submitLabel(.done)
+                    TextField("영상 제목", text: Binding(get: { project.title }, set: { project.title = StudioProject.limited($0, StudioProject.titleLimit); changed(invalidatesVideo: false) })).font(.headline).submitLabel(.done)
                     Text("\(project.scenes.count)장 · \(project.duration, specifier: "%.1f")초").font(.caption).foregroundStyle(.secondary).fixedSize()
                 }.padding(.horizontal, 20)
                 preview(height: max(150, min(geometry.size.height - 285, tool == nil ? 460 : 270)))
@@ -220,7 +220,7 @@ struct EditorView: View {
                             }.padding(4).overlay(RoundedRectangle(cornerRadius: 11).stroke(index == selected ? Color.indigo : .clear, lineWidth: 2))
                         }.buttonStyle(.plain).id(scene.id)
                             .onDrag { pausePreview(); draggedID = scene.id; return NSItemProvider(object: scene.id as NSString) }
-                            .onDrop(of: [.text], delegate: SceneReorderDelegate(project: $project, selected: $selected, draggedID: $draggedID, targetID: scene.id, onChange: changed))
+                            .onDrop(of: [.text], delegate: SceneReorderDelegate(project: $project, selected: $selected, draggedID: $draggedID, targetID: scene.id, onChange: { changed() }))
                             .contextMenu {
                                 Button("앞으로 이동", systemImage: "arrow.left") { moveScene(index, -1) }.disabled(index == 0)
                                 Button("뒤로 이동", systemImage: "arrow.right") { moveScene(index, 1) }.disabled(index == project.scenes.count-1)
@@ -289,7 +289,7 @@ struct EditorView: View {
                 sceneAIControls
                 TextField("이 순간을 한 문장으로", text: Binding(get: { scene.narration }, set: { value in
                     guard let index = project.scenes.firstIndex(where: { $0.id == scene.id }) else { return }
-                    project.scenes[index].narration = String(value.prefix(160)); changed()
+                    project.scenes[index].narration = StudioProject.limited(value, StudioProject.narrationLimit); changed()
                 }), axis: .vertical).lineLimit(2...4).textFieldStyle(.roundedBorder)
             }
             Text("모든 장면의 글씨").font(.subheadline.bold())
@@ -328,7 +328,7 @@ struct EditorView: View {
     private var musicPanel: some View {
         VStack(alignment: .leading, spacing: 15) {
             selectionRow("음악 없이", icon: "speaker.slash", selected: project.musicID.isEmpty && project.musicAssetID.isEmpty) { project.musicID = ""; project.musicAssetID = ""; project.musicName = ""; changed() }
-            Picker("배경음악 분위기", selection: Binding(get: { project.effectiveMood }, set: { project.mood = $0; changed() })) {
+            Picker("배경음악 분위기", selection: Binding(get: { project.effectiveMood }, set: { project.mood = $0; changed(invalidatesVideo: false) })) {
                 ForEach(MusicLibrary.moods, id: \.self) { Text($0).tag($0) }
             }
             Text("\(project.effectiveMood)에 어울리는 BGM \(MusicLibrary.recommended(project.effectiveMood).count)곡").font(.caption).foregroundStyle(.secondary)
@@ -376,11 +376,11 @@ struct EditorView: View {
 
     private var aiPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Picker("분위기", selection: Binding(get: { project.effectiveMood }, set: { project.mood = $0; changed() })) {
+            Picker("분위기", selection: Binding(get: { project.effectiveMood }, set: { project.mood = $0; changed(invalidatesVideo: false) })) {
                 ForEach(MusicLibrary.moods, id: \.self) { Text($0).tag($0) }
             }
-            TextField("사진 설명", text: Binding(get: { project.effectiveDescription }, set: { project.description = String($0.prefix(2000)); changed() }), axis: .vertical).lineLimit(3...5).textFieldStyle(.roundedBorder)
-            Picker("자막 말투", selection: Binding(get: { project.effectiveTone }, set: { project.tone = $0; changed() })) {
+            TextField("사진 설명", text: Binding(get: { project.effectiveDescription }, set: { project.description = String($0.prefix(2000)); changed(invalidatesVideo: false) }), axis: .vertical).lineLimit(3...5).textFieldStyle(.roundedBorder)
+            Picker("자막 말투", selection: Binding(get: { project.effectiveTone }, set: { project.tone = $0; changed(invalidatesVideo: false) })) {
                 ForEach(["담백하고 자연스럽게", "따뜻하고 감성적으로", "가볍고 유쾌하게"], id: \.self) { Text($0).tag($0) }
             }
             if ai.apiKey.isEmpty {
@@ -438,7 +438,7 @@ struct EditorView: View {
                     }.buttonStyle(.borderedProminent).disabled(!project.canRender || locked)
                     if project.duration > 180 { Text("장면 시간을 줄여 180초 이하로 맞춰주세요.").font(.caption).foregroundStyle(.red) }
                     Text("게시 문안").font(.headline)
-                    TextField("본문과 해시태그", text: binding(\.caption), axis: .vertical).lineLimit(4...8).textFieldStyle(.roundedBorder).disabled(locked)
+                    TextField("본문과 해시태그", text: Binding(get: { project.caption }, set: { project.caption = StudioProject.limited($0, StudioProject.captionLimit); changed(invalidatesVideo: false) }), axis: .vertical).lineLimit(4...8).textFieldStyle(.roundedBorder).disabled(locked)
                     if !project.musicCredit.isEmpty {
                         Text("음악 출처 · 게시 문안에 포함").font(.subheadline.bold())
                         Text(project.musicCredit).font(.caption).textSelection(.enabled)
@@ -480,10 +480,13 @@ struct EditorView: View {
             project.scenes[index][keyPath: keyPath] = value; changed()
         })
     }
-    private func changed() {
+    /// Pass `invalidatesVideo: false` for metadata (title, caption, mood, description, tone)
+    /// that is not drawn into the MP4 so the finished video stays shareable.
+    private func changed(invalidatesVideo: Bool = true) {
         project.normalizeThumbnail()
         previewTime = min(previewTime, project.duration); previewAnchor = previewTime; previewEpoch = Date()
-        project.lastVideo = ""; resultURL = nil; transferURL = nil
+        if invalidatesVideo { project.lastVideo = ""; resultURL = nil }
+        transferURL = nil
         store.save(project)
         if previewPlaying || auditioning { do { try previewAudio.play(project, assets: store.assets, time: previewTime) } catch { self.error = error.localizedDescription } }
     }
@@ -506,15 +509,18 @@ struct EditorView: View {
         for item in items.prefix(max(0, 10-project.scenes.count)) {
             do {
                 guard let data = try await item.loadTransferable(type: Data.self) else { continue }
-                project.scenes.append(StudioScene(title: "사진 \(project.scenes.count+1)", photoID: try store.importPhoto(data))); selected = project.scenes.count-1; changed()
+                let jpeg = try await Task.detached(priority: .userInitiated) { try StudioStore.preparePhoto(data) }.value
+                project.scenes.append(StudioScene(title: "사진 \(project.scenes.count+1)", photoID: try store.registerPhoto(jpeg))); selected = project.scenes.count-1; changed()
             } catch { self.error = error.localizedDescription }
         }
     }
     private func replacePhoto(_ item: PhotosPickerItem) async {
         guard let original = scene else { return }; pausePreview(); importing = true; defer { importing = false; replacement = nil }
         do {
-            guard let data = try await item.loadTransferable(type: Data.self), let index = project.scenes.firstIndex(where: { $0.id == original.id }) else { return }
-            project.scenes[index].photoID = try store.importPhoto(data); changed()
+            guard let data = try await item.loadTransferable(type: Data.self) else { return }
+            let jpeg = try await Task.detached(priority: .userInitiated) { try StudioStore.preparePhoto(data) }.value
+            guard let index = project.scenes.firstIndex(where: { $0.id == original.id }) else { return }
+            project.scenes[index].photoID = try store.registerPhoto(jpeg); changed()
         } catch { self.error = error.localizedDescription }
     }
     private func requestAI() { pausePreview(); tool = .ai }
@@ -534,8 +540,8 @@ struct EditorView: View {
         generating = true; message = "사진에 맞는 자막을 제안하는 중…"; defer { generating = false }
         do {
             let result = try await AIService.suggest(project: project, provider: ai.provider, model: ai.model, endpoint: ai.endpoint, key: ai.apiKey, assets: store.assets)
-            for index in project.scenes.indices { project.scenes[index].title = result.scenes[index].title; project.scenes[index].narration = result.scenes[index].narration }
-            project.caption = result.caption; changed(); tool = .subtitle
+            for index in project.scenes.indices { project.scenes[index].title = StudioProject.limited(result.scenes[index].title, StudioProject.sceneTitleLimit); project.scenes[index].narration = StudioProject.limited(result.scenes[index].narration, StudioProject.narrationLimit) }
+            project.caption = StudioProject.limited(result.caption, StudioProject.captionLimit); changed(); tool = .subtitle
         } catch { self.error = error.localizedDescription }
     }
     #if DEBUG

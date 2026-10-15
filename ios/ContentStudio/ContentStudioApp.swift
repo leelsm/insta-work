@@ -17,6 +17,7 @@ import UIKit
                     #if DEBUG
                     if ProcessInfo.processInfo.arguments.contains("--verify-rendering") { await verifyRendering() }
                     if ProcessInfo.processInfo.arguments.contains("--repair-saved-videos") { await repairSavedVideos() }
+                    if ProcessInfo.processInfo.arguments.contains("--verify-store") { await MobileVerification.verifyStore() }
                     #endif
                 }
                 .tint(.indigo)
@@ -252,6 +253,122 @@ import UIKit
         checks["cancelled_render_cleans_temporary_video"] = !(try FileManager.default.contentsOfDirectory(at: store.exports, includingPropertiesForKeys: nil)).contains { $0.lastPathComponent.hasSuffix("-silent.mp4") }
         checks.merge(try await fontSizeChecks(store: store)) { _, new in new }
         return checks
+    }
+
+    /// Index recovery, text limits, file cleanup and clean-subtitle shadow checks.
+    /// Uses only temporary stores and writes tmp/store-check-receipt.json.
+    static func verifyStore() async {
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("store-check-" + UUID().uuidString)
+        var checks: [String: Bool] = [:]
+        let files = FileManager.default
+        func names(_ url: URL) -> Set<String> { Set((try? files.contentsOfDirectory(atPath: url.path)) ?? []) }
+        func corruptCopies(_ root: URL) -> [URL] { names(root).filter { $0.hasPrefix("projects.corrupt-") }.map { root.appendingPathComponent($0) } }
+        do {
+            // I1: one null field and one broken record must not erase the other projects.
+            let lossy = base.appendingPathComponent("lossy")
+            try files.createDirectory(at: lossy, withIntermediateDirectories: true)
+            var good = StudioProject(); good.title = "정상"; good.scenes = [StudioScene(title: "장면")]
+            var nullVideo = StudioProject(); nullVideo.title = "lastVideo null"
+            var rows = try JSONSerialization.jsonObject(with: JSONEncoder().encode([good, nullVideo])) as! [[String: Any]]
+            rows[1]["lastVideo"] = NSNull(); rows[1].removeValue(forKey: "musicVolume")
+            rows.append(["id": "broken", "title": "깨진 항목", "scenes": "not-a-list"])
+            let original = try JSONSerialization.data(withJSONObject: rows)
+            try original.write(to: lossy.appendingPathComponent("projects.json"))
+            let orphan = lossy.appendingPathComponent("assets/old-orphan.jpg")
+            try files.createDirectory(at: orphan.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data([1]).write(to: orphan); try files.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -7200)], ofItemAtPath: orphan.path)
+            let lossyStore = StudioStore(root: lossy)
+            checks["lossy_keeps_valid_projects"] = lossyStore.projects.map(\.title) == ["정상", "lastVideo null"]
+            checks["lossy_null_field_defaults"] = lossyStore.projects.last?.lastVideo == "" && lossyStore.projects.last?.musicVolume == 0.35
+            checks["lossy_reports_issue"] = lossyStore.loadIssue != nil && !lossyStore.persistBlocked
+            checks["lossy_backup_is_original"] = corruptCopies(lossy).count == 1 && (try? Data(contentsOf: corruptCopies(lossy)[0])) == original
+            checks["lossy_skips_orphan_sweep"] = files.fileExists(atPath: orphan.path)
+            _ = lossyStore.create(kind: "daily")
+            checks["lossy_create_keeps_projects"] = StudioStore(root: lossy).projects.count == 3
+
+            let garbage = base.appendingPathComponent("garbage")
+            try files.createDirectory(at: garbage, withIntermediateDirectories: true)
+            try Data("{not json".utf8).write(to: garbage.appendingPathComponent("projects.json"))
+            let garbageStore = StudioStore(root: garbage)
+            checks["garbage_backed_up"] = garbageStore.projects.isEmpty && garbageStore.loadIssue != nil && corruptCopies(garbage).count == 1
+
+            let unreadable = base.appendingPathComponent("unreadable")
+            try files.createDirectory(at: unreadable.appendingPathComponent("projects.json"), withIntermediateDirectories: true)
+            let unreadableStore = StudioStore(root: unreadable)
+            _ = unreadableStore.create(kind: "daily")
+            var isDirectory: ObjCBool = false
+            checks["unreadable_blocks_persist"] = unreadableStore.persistBlocked && files.fileExists(atPath: unreadable.appendingPathComponent("projects.json").path, isDirectory: &isDirectory) && isDirectory.boolValue
+
+            // I4: long/blank titles and long captions export with safe names and PC limits.
+            let store = StudioStore(root: base.appendingPathComponent("main"))
+            let white = UIGraphicsImageRenderer(size: CGSize(width: 1080, height: 1920)).image { _ in UIColor.white.setFill(); UIRectFill(CGRect(x: 0, y: 0, width: 1080, height: 1920)) }
+            let jpeg = try await Task.detached { try StudioStore.preparePhoto(white.jpegData(compressionQuality: 0.9)!) }.value
+            var project = StudioProject(); project.title = String(repeating: "가", count: 120)
+            var scene = StudioScene(title: "흰 사진", photoID: try store.registerPhoto(jpeg)); scene.duration = 0.5; scene.narration = "밝은 사진 위 자막"
+            project.scenes = [scene]; project.musicID = ""; project.motion = "still"; project.transition = "cut"; project.subtitleStyle = "clean"
+            func exported(_ value: StudioProject) throws -> (URL, StudioProject) {
+                let url = try store.exportTransfer(value)
+                return (url, try JSONDecoder().decode(TransferFile.self, from: Data(contentsOf: url)).project)
+            }
+            let (longURL, longProject) = try exported(project)
+            checks["export_long_title_file_name"] = files.fileExists(atPath: longURL.path) && longURL.lastPathComponent.precomposedStringWithCanonicalMapping.utf8.count < 255
+            checks["export_long_title_kept"] = longProject.title.count == 120
+            project.title = String(repeating: "나", count: 151); project.caption = String(repeating: "다", count: 2300)
+            project.scenes[0].title = String(repeating: "라", count: 100)
+            let (_, clamped) = try exported(project)
+            checks["export_clamps_text"] = clamped.title.count == 150 && clamped.caption.count == 2200 && clamped.scenes[0].title.count == 90
+            project.title = "   "
+            let (blankURL, blank) = try exported(project)
+            checks["export_blank_title_default"] = blank.title == "나의 일상 영상" && blankURL.lastPathComponent.hasPrefix("나의 일상 영상-")
+            checks["export_unsafe_name"] = StudioStore.transferFileName("a/b:c\\d?e%f*g|h\"i<j>k") == "a-b-c-d-e-f-g-h-i-j-k" && StudioStore.transferFileName("  ") == "project"
+            checks["export_keeps_latest_studio_only"] = names(store.exports).filter { $0.hasSuffix(".studio") } == [blankURL.lastPathComponent]
+            let family = String(repeating: "👨‍👩‍👧", count: 60)
+            checks["limit_counts_code_points"] = StudioProject.limited(family, 150).unicodeScalars.count <= 150 && StudioProject.limited("abc", 150) == "abc"
+
+            // I3: clean subtitles get a dark shadow on a white photo.
+            project.title = "검증"; project.caption = ""
+            let frame = try VideoRenderer.frame(project, scene: project.scenes[0], index: 0, assets: store.assets)
+            var gray = [UInt8](repeating: 0, count: 1080 * 1920)
+            gray.withUnsafeMutableBytes { bytes in
+                let context = CGContext(data: bytes.baseAddress, width: 1080, height: 1920, bitsPerComponent: 8, bytesPerRow: 1080,
+                                        space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue)!
+                context.draw(frame.cgImage!, in: CGRect(x: 0, y: 0, width: 1080, height: 1920))
+            }
+            checks["clean_subtitle_shadow_visible"] = gray.filter { $0 < 80 }.count > 500
+            try? frame.pngData()?.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("store-check-clean-frame.png"))
+
+            // I5: re-render, invalidation and delete remove unreachable files.
+            store.save(project)
+            let first = try await VideoRenderer.render(project, assets: store.assets, exports: store.exports) { _, _ in }
+            project.lastVideo = first.lastPathComponent; store.save(project)
+            let second = try await VideoRenderer.render(project, assets: store.assets, exports: store.exports) { _, _ in }
+            project.lastVideo = second.lastPathComponent; store.save(project)
+            checks["rerender_removes_previous_video"] = !files.fileExists(atPath: first.path) && !files.fileExists(atPath: VideoRenderer.thumbnailURL(for: first).path)
+                && files.fileExists(atPath: second.path) && files.fileExists(atPath: VideoRenderer.thumbnailURL(for: second).path)
+            project.lastVideo = ""; store.save(project)
+            checks["invalidation_removes_video"] = !files.fileExists(atPath: second.path) && !files.fileExists(atPath: VideoRenderer.thumbnailURL(for: second).path)
+            let third = try await VideoRenderer.render(project, assets: store.assets, exports: store.exports) { _, _ in }
+            project.lastVideo = third.lastPathComponent; store.save(project)
+            var sharing = StudioProject(); sharing.scenes = [StudioScene(title: "공유 사진", photoID: project.scenes[0].photoID)]; store.save(sharing)
+            let ownPhoto = try store.registerPhoto(jpeg)
+            var deleting = StudioProject(); deleting.scenes = [StudioScene(title: "삭제", photoID: ownPhoto)]; store.save(deleting)
+            store.delete(deleting)
+            checks["delete_removes_own_photo"] = !files.fileExists(atPath: store.assets.appendingPathComponent(ownPhoto).path)
+            store.delete(project)
+            checks["delete_removes_video_keeps_shared_photo"] = !files.fileExists(atPath: third.path) && !files.fileExists(atPath: VideoRenderer.thumbnailURL(for: third).path)
+                && files.fileExists(atPath: store.assets.appendingPathComponent(sharing.scenes[0].photoID).path)
+            let oldOrphan = store.assets.appendingPathComponent("orphan-old.jpg"), newOrphan = store.assets.appendingPathComponent("orphan-new.jpg")
+            let oldExport = store.exports.appendingPathComponent("orphan-old.mp4")
+            for url in [oldOrphan, newOrphan, oldExport] { try Data([1]).write(to: url) }
+            for url in [oldOrphan, oldExport] { try files.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -7200)], ofItemAtPath: url.path) }
+            let reopened = StudioStore(root: store.root)
+            checks["sweep_removes_old_orphans"] = !files.fileExists(atPath: oldOrphan.path) && !files.fileExists(atPath: oldExport.path)
+            checks["sweep_keeps_recent_and_referenced"] = files.fileExists(atPath: newOrphan.path) && files.fileExists(atPath: store.assets.appendingPathComponent(sharing.scenes[0].photoID).path) && reopened.projects.count == 1
+        } catch { checks["completed"] = false }
+        try? files.removeItem(at: base)
+        if let data = try? JSONSerialization.data(withJSONObject: checks, options: [.sortedKeys]) {
+            try? data.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("store-check-receipt.json"), options: .atomic)
+        }
     }
 
     nonisolated static func photoPixels(_ image: CGImage) -> [UInt8] {

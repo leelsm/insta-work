@@ -24,11 +24,46 @@ struct StudioScene: Codable, Identifiable, Hashable {
     init(title: String, photoID: String = "") { self.title = title; self.photoID = photoID }
 }
 
+// Missing or null fields fall back to defaults so one old/partial record does not
+// make the whole projects.json unreadable. Wrong types still throw.
+extension StudioScene {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = StudioScene()
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? d.id
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? d.title
+        body = try c.decodeIfPresent(String.self, forKey: .body) ?? d.body
+        narration = try c.decodeIfPresent(String.self, forKey: .narration) ?? d.narration
+        duration = try c.decodeIfPresent(Double.self, forKey: .duration) ?? d.duration
+        photoID = try c.decodeIfPresent(String.self, forKey: .photoID) ?? d.photoID
+        sourceIDs = try c.decodeIfPresent([Int].self, forKey: .sourceIDs) ?? d.sourceIDs
+        imageAuthor = try c.decodeIfPresent(String.self, forKey: .imageAuthor)
+        imageLicense = try c.decodeIfPresent(String.self, forKey: .imageLicense)
+        imagePageURL = try c.decodeIfPresent(String.self, forKey: .imagePageURL)
+        imageLicenseURL = try c.decodeIfPresent(String.self, forKey: .imageLicenseURL)
+        imageCredit = try c.decodeIfPresent(String.self, forKey: .imageCredit)
+        imageSearchQuery = try c.decodeIfPresent(String.self, forKey: .imageSearchQuery)
+        photoFit = try c.decodeIfPresent(String.self, forKey: .photoFit) ?? d.photoFit
+        positionX = try c.decodeIfPresent(Double.self, forKey: .positionX) ?? d.positionX
+        positionY = try c.decodeIfPresent(Double.self, forKey: .positionY) ?? d.positionY
+    }
+}
+
 struct StudioSource: Codable, Hashable {
     var title = ""
     var text = ""
     var url = ""
     var rights = ""
+}
+
+extension StudioSource {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        rights = try c.decodeIfPresent(String.self, forKey: .rights) ?? ""
+    }
 }
 
 struct StudioProject: Codable, Identifiable, Hashable {
@@ -68,6 +103,33 @@ struct StudioProject: Codable, Identifiable, Hashable {
     var lastVideo = ""
     var renderLayoutVersion: Int?
     var thumbnailSceneID: String?
+
+    enum CodingKeys: String, CodingKey { case id, title, kind, scenes, sources, caption, template, brand, subtitleX, subtitleY, subtitleStyle, fontAssetID, fontName, subtitleSize, motion, transition, musicID, musicAssetID, musicName, musicVolume, musicOffset, mood, description, tone, createdAt, updatedAt, lastVideo, renderLayoutVersion, thumbnailSceneID }
+
+    // Length limits shared with the PC version's import validation (Python code points).
+    static let titleLimit = 150, captionLimit = 2200, sceneTitleLimit = 90, narrationLimit = 160
+    static func limited(_ text: String, _ limit: Int) -> String {
+        var scalars = 0
+        var result = ""
+        for character in text {
+            scalars += character.unicodeScalars.count
+            if scalars > limit { break }
+            result.append(character)
+        }
+        return result
+    }
+    var defaultTitle: String { isDaily ? "나의 일상 영상" : "새 카드 영상" }
+    /// Clamps text to the PC version's limits and replaces a blank title.
+    mutating func normalizeText() {
+        let trimmed = Self.limited(title, Self.titleLimit).trimmingCharacters(in: .whitespacesAndNewlines)
+        title = trimmed.isEmpty ? defaultTitle : trimmed
+        caption = Self.limited(caption, Self.captionLimit)
+        for index in scenes.indices {
+            scenes[index].title = Self.limited(scenes[index].title, Self.sceneTitleLimit)
+            scenes[index].narration = Self.limited(scenes[index].narration, Self.narrationLimit)
+        }
+    }
+
     var thumbnailIndex: Int { scenes.firstIndex { $0.id == thumbnailSceneID } ?? 0 }
     mutating func normalizeThumbnail() {
         if let id = thumbnailSceneID, !scenes.contains(where: { $0.id == id }) { thumbnailSceneID = scenes.first?.id }
@@ -90,6 +152,42 @@ struct StudioProject: Codable, Identifiable, Hashable {
     var postingCaption: String {
         let text = caption.trimmingCharacters(in: .whitespacesAndNewlines)
         return musicCredit.isEmpty || text.contains(musicCredit) ? text : [text, musicCredit].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+}
+
+extension StudioProject {
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = StudioProject()
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? d.id
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? d.title
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? d.kind
+        scenes = try c.decodeIfPresent([StudioScene].self, forKey: .scenes) ?? d.scenes
+        sources = try c.decodeIfPresent([StudioSource].self, forKey: .sources) ?? d.sources
+        caption = try c.decodeIfPresent(String.self, forKey: .caption) ?? d.caption
+        template = try c.decodeIfPresent(String.self, forKey: .template) ?? d.template
+        brand = try c.decodeIfPresent(String.self, forKey: .brand) ?? d.brand
+        subtitleX = try c.decodeIfPresent(Double.self, forKey: .subtitleX) ?? d.subtitleX
+        subtitleY = try c.decodeIfPresent(Double.self, forKey: .subtitleY) ?? d.subtitleY
+        subtitleStyle = try c.decodeIfPresent(String.self, forKey: .subtitleStyle) ?? d.subtitleStyle
+        fontAssetID = try c.decodeIfPresent(String.self, forKey: .fontAssetID) ?? d.fontAssetID
+        fontName = try c.decodeIfPresent(String.self, forKey: .fontName) ?? d.fontName
+        subtitleSize = try c.decodeIfPresent(Double.self, forKey: .subtitleSize)
+        motion = try c.decodeIfPresent(String.self, forKey: .motion)
+        transition = try c.decodeIfPresent(String.self, forKey: .transition)
+        musicID = try c.decodeIfPresent(String.self, forKey: .musicID) ?? d.musicID
+        musicAssetID = try c.decodeIfPresent(String.self, forKey: .musicAssetID) ?? d.musicAssetID
+        musicName = try c.decodeIfPresent(String.self, forKey: .musicName) ?? d.musicName
+        musicVolume = try c.decodeIfPresent(Double.self, forKey: .musicVolume) ?? d.musicVolume
+        musicOffset = try c.decodeIfPresent(Double.self, forKey: .musicOffset)
+        mood = try c.decodeIfPresent(String.self, forKey: .mood)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        tone = try c.decodeIfPresent(String.self, forKey: .tone)
+        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? d.createdAt
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? d.updatedAt
+        lastVideo = try c.decodeIfPresent(String.self, forKey: .lastVideo) ?? d.lastVideo
+        renderLayoutVersion = try c.decodeIfPresent(Int.self, forKey: .renderLayoutVersion)
+        thumbnailSceneID = try c.decodeIfPresent(String.self, forKey: .thumbnailSceneID)
     }
 }
 

@@ -47,6 +47,33 @@ BOOTSTRAP = '''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="
 <script>async function start(port){let result=await window.pywebview.api.start_server(port);if(result.url){window.location.replace(result.url);return;}if(result.error){document.getElementById('status').textContent=result.error;document.getElementById('choose').style.display='block';}}window.addEventListener('pywebviewready',()=>start(__PORT__));</script></html>'''
 
 
+DEFAULT_PORT = 8080
+AUTO_PORT_ATTEMPTS = 20
+
+
+def bind_port(port, fallback=0):
+    """Bind 127.0.0.1 on port, or on the next `fallback` ports when it is busy.
+
+    Returns (socket, port) on success or (None, Korean error message)."""
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        return None, '포트는 1~65535 범위의 숫자여야 합니다.'
+    first_error = None
+    for candidate in range(port, min(65535, port + fallback) + 1):
+        attempt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if os.name == 'nt':
+            attempt.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            attempt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            attempt.bind(('127.0.0.1', candidate)); attempt.listen(128)
+            return attempt, candidate
+        except OSError as exc:
+            attempt.close()
+            first_error = first_error or exc
+    tried = f'{port}' if not fallback else f'{port}~{min(65535, port + fallback)}'
+    return None, f'포트 {tried}을 사용할 수 없습니다 (오류 {first_error.errno}). 다른 앱이 사용 중이거나 권한이 부족합니다. 대체 포트를 선택하세요.'
+
+
 class PreviewCloseGuard:
     """Close the active video review before closing the desktop application."""
     def __init__(self):
@@ -106,24 +133,18 @@ def main():
             import webbrowser
             webbrowser.open(json.loads((store.root / 'instance.json').read_text())['url'])
 
-    def serve(port):
+    def serve(port, fallback=0):
         nonlocal server, sock, thread
         with startup_lock:
             if server:
                 return None
-            if not isinstance(port, int) or not 1 <= port <= 65535:
-                return '포트는 1~65535 범위의 숫자여야 합니다.'
-            attempt = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            if os.name == 'nt':
-                attempt.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-            else:
-                attempt.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                attempt.bind(('127.0.0.1', port)); attempt.listen(128)
-            except OSError as exc:
-                attempt.close()
-                return f'포트 {port}을 사용할 수 없습니다 (오류 {exc.errno}). 다른 앱이 사용 중이거나 권한이 부족합니다. 대체 포트를 선택하세요.'
-            sock = attempt
+            attempt, bound = bind_port(port, fallback)
+            if attempt is None and fallback and port != DEFAULT_PORT:
+                # e.g. an old saved port 80 that needs privileges: retry from the default.
+                attempt, bound = bind_port(DEFAULT_PORT, fallback)
+            if attempt is None:
+                return bound
+            sock, port = attempt, bound
             token = secrets.token_urlsafe(32)
             app = create_app(store=store, session_token=token, stop_callback=stop, activate_callback=activate, review_callback=lambda reviewing: setattr(preview_close, 'reviewing', reviewing))
             server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=port, log_level='warning', access_log=False, timeout_graceful_shutdown=3))
@@ -151,18 +172,26 @@ def main():
         def set_video_review(self, reviewing):
             preview_close.reviewing = reviewing is True
 
+        _automatic = True
+
         def start_server(self, port):
-            result=serve(port)
+            # Only the bootstrap's first start tries the following ports; a port the
+            # user types on the start screen is used exactly.
+            fallback, self._automatic = (initial_fallback if self._automatic else 0), False
+            result=serve(port, fallback)
             if result and result.startswith('http://'):
                 return {'url':result}
             return {'error':result or '이미 실행 중입니다.'}
 
     try:
-        initial_port=args.port if args.port is not None else store.settings().get('port',80)
+        initial_port=args.port if args.port is not None else store.settings().get('port',DEFAULT_PORT)
+        # A saved/default port that is busy falls through to the next free ports;
+        # an explicit --port or a port chosen on the start screen is used as-is.
+        initial_fallback=0 if args.port is not None else AUTO_PORT_ATTEMPTS
         signal.signal(signal.SIGINT, lambda *_:stop())
         signal.signal(signal.SIGTERM, lambda *_:stop())
         if args.browser:
-            result=serve(initial_port)
+            result=serve(initial_port, initial_fallback)
             if not result or not result.startswith('http://'):
                 print(result or '서비스 시작 실패');return
             print('개발용 브라우저 모드. 탭 닫기는 서버를 종료하지 않습니다.',flush=True)

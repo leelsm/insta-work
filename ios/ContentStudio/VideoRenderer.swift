@@ -189,6 +189,10 @@ enum VideoRenderer {
         if project.subtitleStyle == "box" {
             UIColor.black.withAlphaComponent(0.76).setFill()
             UIBezierPath(roundedRect: box, cornerRadius: 24).fill()
+        } else {
+            // Same layout offset by +3,+3 so clean text stays readable on bright photos (matches the PC renderer).
+            drawText(text, rect: box.insetBy(dx: 28, dy: 22).offsetBy(dx: 3, dy: 3), size: fontSize,
+                     color: UIColor.black.withAlphaComponent(0.82), font: face)
         }
         drawText(text, rect: box.insetBy(dx: 28, dy: 22), size: fontSize, color: color, font: face)
     }

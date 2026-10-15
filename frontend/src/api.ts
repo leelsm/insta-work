@@ -7,7 +7,9 @@ export async function initialize(){
   await api('/session','POST',{token})
 }
 export async function api<T=any>(path:string,method='GET',body?:unknown):Promise<T>{
-  const r = await fetch('/api'+path,{method,headers:{'Content-Type':'application/json','X-Studio-Token':token},body:body===undefined?undefined:JSON.stringify(body)})
+  let r:Response
+  try{ r = await fetch('/api'+path,{method,headers:{'Content-Type':'application/json','X-Studio-Token':token},body:body===undefined?undefined:JSON.stringify(body)}) }
+  catch(e){ if((e as Error)?.name==='AbortError') throw e; throw new Error('스튜디오 로컬 서비스에 연결할 수 없습니다. 앱을 다시 실행해주세요.') }
   if(!r.ok) { let data; try{data=await r.json()}catch{data={detail:'요청에 실패했습니다.'}}; throw new Error(typeof data.detail==='string'?data.detail:'입력값을 확인하세요. 길이 또는 형식이 올바르지 않습니다.') }
   return r.json()
 }

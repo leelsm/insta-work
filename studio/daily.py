@@ -24,7 +24,9 @@ def asset_path(root, asset_id):
 
 
 def save_photo(root, data, filename):
-    if not data or len(data) > 20_000_000:
+    if not data:
+        raise ValueError('빈 파일입니다. 다른 파일을 선택하세요.')
+    if len(data) > 20_000_000:
         raise ValueError('사진은 한 장당 20MB 이하여야 합니다.')
     try:
         with warnings.catch_warnings():
@@ -37,6 +39,11 @@ def save_photo(root, data, filename):
                 image = ImageOps.exif_transpose(original)
                 # Preserve aspect ratio; never crop the original framing during import.
                 image.thumbnail((1920, 1920), Image.Resampling.LANCZOS)
+                if image.mode in ('RGBA', 'LA', 'PA') or (image.mode == 'P' and 'transparency' in image.info):
+                    # Flatten transparent areas onto white instead of letting them turn black.
+                    rgba = image.convert('RGBA')
+                    image = Image.new('RGBA', rgba.size, (255, 255, 255, 255))
+                    image.alpha_composite(rgba)
                 image = image.convert('RGB')
     except Exception:
         raise ValueError('사진을 읽을 수 없습니다. 정상 JPEG·PNG·WebP 파일을 선택해주세요.') from None
