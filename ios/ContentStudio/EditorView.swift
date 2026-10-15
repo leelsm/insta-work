@@ -291,6 +291,7 @@ struct EditorView: View {
                     guard let index = project.scenes.firstIndex(where: { $0.id == scene.id }) else { return }
                     project.scenes[index].narration = StudioProject.limited(value, StudioProject.narrationLimit); changed()
                 }), axis: .vertical).lineLimit(2...4).textFieldStyle(.roundedBorder)
+                subtitleSpeedWarning(scene)
             }
             Text("모든 장면의 글씨").font(.subheadline.bold())
             Picker("폰트", selection: Binding(get: { project.fontAssetID.isEmpty ? "" : presetFont?.id ?? "custom" }, set: selectFont)) {
@@ -312,6 +313,26 @@ struct EditorView: View {
         }
     }
 
+    @ViewBuilder private func subtitleSpeedWarning(_ scene: StudioScene) -> some View {
+        if let index = project.scenes.firstIndex(where: { $0.id == scene.id }),
+           let speed = SubtitleSpeed.check(project.scenes, index: index, text: scene.narration) {
+            let seconds = { (value: Double) in (value * 10).rounded() / 10 == value.rounded() ? "\(Int(value.rounded()))초" : String(format: "%.1f초", value) }
+            VStack(alignment: .leading, spacing: 6) {
+                Label("자막이 빠릅니다", systemImage: "gauge.with.dots.needle.67percent").font(.subheadline.bold()).foregroundStyle(.orange)
+                Text("읽기 편한 길이는 \(seconds(speed.recommended))이에요. (현재 \(seconds(speed.current)))").font(.caption)
+                if let applicable = speed.applicable {
+                    if applicable < speed.recommended { Text("장면당 30초·총 180초 한도로 \(seconds(applicable))까지 늘릴 수 있어요.").font(.caption2).foregroundStyle(.secondary) }
+                    Button("\(seconds(applicable))로 늘리기") { project.scenes[index].duration = applicable; changed() }
+                        .buttonStyle(.bordered).accessibilityIdentifier("subtitle-speed-apply")
+                } else {
+                    Text("장면당 30초·총 180초 한도로 더 늘릴 수 없어요. 자막을 줄이거나 다른 장면을 짧게 해 주세요.").font(.caption2).foregroundStyle(.secondary)
+                }
+            }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityIdentifier("subtitle-speed-warning")
+        }
+    }
+
     private var effectsPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("사진 움직임").font(.headline)
@@ -319,7 +340,8 @@ struct EditorView: View {
                 selectionRow(title, icon: icon, selected: project.effectiveMotion == value) { project.motion = value; changed() }
             }
             Text("장면 전환").font(.headline)
-            Picker("장면 전환", selection: Binding(get: { project.effectiveTransition }, set: { project.transition = $0; changed() })) { Text("바로 전환").tag("cut"); Text("어둡게 페이드").tag("fade") }.pickerStyle(.segmented)
+            Picker("장면 전환", selection: Binding(get: { project.effectiveTransition }, set: { project.transition = $0; changed() })) { Text("바로 전환").tag("cut"); Text("크로스페이드").tag("fade") }.pickerStyle(.segmented)
+            Text(project.effectiveTransition == "fade" ? "앞 사진이 다음 사진으로 0.5초 동안 부드럽게 겹쳐 바뀌어요. 영상 길이와 자막 시간은 그대로예요." : "다음 사진으로 바로 바뀌어요.").font(.caption).foregroundStyle(.secondary)
             Button { togglePreview() } label: { Label(previewPlaying ? "미리보기 일시정지" : "움직임 미리보기", systemImage: previewPlaying ? "pause.fill" : "play.fill") }.buttonStyle(.bordered)
             Text("움직임과 전환은 모든 장면에 적용됩니다.").font(.caption).foregroundStyle(.secondary)
         }
@@ -670,7 +692,7 @@ private struct StudioVideoPlayer: View {
             guard !Task.isCancelled else { media.0.pause(); return }
             player = media.0; poster = media.1; showingPoster = media.1 != nil
             player?.isMuted = false
-            // The exported fade starts on black; show a visible photo before playback.
+            // Start the player on a visible frame of the first scene before playback.
             await player?.seek(to: CMTime(seconds: 0.3, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         }.onDisappear { player?.pause() }
     }

@@ -12,8 +12,9 @@ from functools import lru_cache
 from pathlib import Path
 
 import imageio_ffmpeg
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 
+from . import emoji
 from .adapters import speech
 
 RESOURCES = Path(__file__).resolve().parent.parent / 'resources'
@@ -38,10 +39,51 @@ def font(size, custom_path=''):
 NO_LINE_START = '.,!?)]}"\'」』”’…·:;%。、，！？）'
 
 
+def text_length(f, text):
+    """Width of mixed text; emoji clusters use the color emoji advance."""
+    if not emoji.needs_split(text):
+        return f.getlength(text)
+    return sum(emoji.advance(value, f.size) if is_emoji else f.getlength(value)
+               for is_emoji, value in emoji.segments(text))
+
+
+def draw_text(draw, xy, text, f, fill, shadow=False):
+    """Draw one line; emoji clusters are pasted in color (or as a tinted shadow)."""
+    if not emoji.needs_split(text):
+        draw.text(xy, text, font=f, fill=fill)
+        return
+    target = draw._image
+    x, y = xy
+    baseline = y + f.getmetrics()[0]
+    for is_emoji, value in emoji.segments(text):
+        if not is_emoji:
+            draw.text((x, y), value, font=f, fill=fill)
+            x += f.getlength(value)
+            continue
+        rendered = emoji.glyph(value, f.size)
+        if rendered is None:
+            x += f.size
+            continue
+        image, advance, image_baseline = rendered
+        if shadow:
+            alpha = image.getchannel('A')
+            color = ImageColor.getrgb(fill) if isinstance(fill, str) else tuple(fill)
+            if len(color) == 4:
+                alpha = alpha.point(lambda value, opacity=color[3]: value * opacity // 255)
+            image = Image.new('RGBA', image.size, color[:3]); image.putalpha(alpha)
+        position = (round(x), round(baseline - image_baseline))
+        if target.mode == 'RGBA':
+            target.alpha_composite(image, (max(0, position[0]), max(0, position[1])),
+                                   (max(0, -position[0]), max(0, -position[1])))
+        else:
+            target.paste(image, position, image)
+        x += advance
+
+
 def _split_long(token, f, width):
     pieces, current = [], ''
-    for char in token:
-        if current and f.getlength(current + char) > width:
+    for char in emoji.units(token):
+        if current and text_length(f, current + char) > width:
             pieces.append(current)
             current = char
         else:
@@ -54,10 +96,10 @@ def wrap(text, f, width):
     for paragraph in text.split('\n'):
         current = ''
         for word in paragraph.split():
-            pieces = [word] if f.getlength(word) <= width else _split_long(word, f, width)
+            pieces = [word] if text_length(f, word) <= width else _split_long(word, f, width)
             for k, piece in enumerate(pieces):
                 candidate = (current + (' ' if current and k == 0 else '') + piece) if current else piece
-                if not current or f.getlength(candidate) <= width:
+                if not current or text_length(f, candidate) <= width:
                     current = candidate
                     continue
                 # A whole word that starts with a quote ("좋은) is an opening mark, so it
@@ -87,9 +129,9 @@ def layout(text, box, size, minimum, font_path=''):
     raise ValueError('카드 글자가 안전 영역을 넘습니다. 제목·본문을 줄이거나 카드를 나눠 주세요.')
 
 
-def draw_lines(draw, lines, f, step, x, y, color):
+def draw_lines(draw, lines, f, step, x, y, color, shadow=False):
     for line in lines:
-        draw.text((x, y), line, font=f, fill=color)
+        draw_text(draw, (x, y), line, f, color, shadow)
         y += step
 
 
@@ -130,7 +172,7 @@ def chunks(text, limit=64):
     for piece in pieces:
         while len(piece) > limit:
             cut = piece.rfind(' ', 15, limit)
-            cut = cut if cut > 0 else limit
+            cut = cut if cut > 0 else emoji.safe_cut(piece, limit)
             result.append(piece[:cut].strip())
             piece = piece[cut:].strip()
         if piece:
@@ -202,22 +244,23 @@ def render(project, directory, vault, settings, cancel, progress, process_regist
     if cursor > 180:
         raise ValueError('영상이 180초를 넘습니다. 카드 또는 대본을 줄여 주세요.')
     (directory / 'subtitles.srt').write_text('\n'.join(srt), encoding='utf-8')
-    clips = []
+    shots = []
     for i, scene in enumerate(project['scenes']):
         parts = [item for item in timeline if item[2] == i]
-        scene_duration = sum(item[1] for item in parts)
+        scene_frames = round(sum(item[1] for item in parts)*30)
         background = f'background-{i:02}.png'
         card(project, scene, i, subtitle='', assets=assets).save(directory / background)
         offset = 0
         for k, (_, duration, _, text) in enumerate(parts):
             subtitle = f'subtitle-{i:02}-{k:02}.png'
             caption_layer(project, text, assets, .79).save(directory / subtitle)
-            name = f'clip-{i:02}-{k:02}.mp4'; clips.append(name)
-            render_clip(project, directory, background, subtitle, name, duration,
-                        round(scene_duration*30), cancel, process_register, offset,
-                        first=k==0 and i>0, last=k==len(parts)-1 and i<len(project['scenes'])-1)
+            shots.append({'name': f'clip-{i:02}-{k:02}.mp4', 'scene': i, 'background': background,
+                          'subtitle': subtitle, 'duration': duration, 'frames': scene_frames, 'offset': offset})
             offset += round(duration*30)
-        progress(40+int((i+1)/len(project['scenes'])*35), '사진 움직임·장면 전환 적용 중')
+    clips = [shot['name'] for shot in shots]
+    for j, shot in enumerate(shots):
+        render_shot(project, directory, shots, j, cancel, process_register)
+        progress(40+int((j+1)/len(shots)*35), '사진 움직임·장면 전환 적용 중')
     (directory / 'clips.txt').write_text(''.join(f"file '{name}'\n" for name in clips), encoding='utf-8')
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     args = [ffmpeg, '-y', '-hide_banner', '-f', 'concat', '-safe', '0', '-i', 'clips.txt']
@@ -345,7 +388,7 @@ def caption_layer(project, text, assets=None, default_y=.76):
     size = int(project.get('subtitle_size', 50))
     face = font(size, font_path)
     lines = wrap(text, face, 830)
-    width = max(320, min(930, int(max(face.getlength(line) for line in lines) + 100)))
+    width = max(320, min(930, int(max(text_length(face, line) for line in lines) + 100)))
     height = min(1200, max(125, math.ceil(size * 1.48) * len(lines) + 56))
     x, y = subtitle_box(project, width, height, default_y)
     # One layout drives both the shadow and the text so their line breaks always match.
@@ -353,7 +396,7 @@ def caption_layer(project, text, assets=None, default_y=.76):
     if project.get('subtitle_style', 'box') == 'box':
         d.rounded_rectangle((x, y, x+width, y+height), radius=24, fill=(8, 9, 13, 190))
     else:
-        draw_lines(d, text_lines, f, step, x+28, y+31, (0, 0, 0, 210))
+        draw_lines(d, text_lines, f, step, x+28, y+31, (0, 0, 0, 210), shadow=True)
     draw_lines(d, text_lines, f, step, x+25, y+28, '#ffffff')
     return image
 
@@ -364,7 +407,9 @@ def photo_caption(project, scene, assets=None):
 
 
 def motion_filter(motion, frames, offset=0):
-    p = f'min((on+{offset})/{max(1,frames)},1)'
+    # Progress is clamped so a neighbouring scene shown during a crossfade holds
+    # its first pose (before it starts) or its last pose (after it ends).
+    p = f'clip((on+{offset})/{max(1,frames)},0,1)'
     z = {'zoom': f'1+0.045*{p}', 'zoom-out': f'1+0.045*(1-{p})',
          'pan-left': '1.045', 'pan-right': '1.045'}.get(motion)
     if not z:
@@ -373,19 +418,60 @@ def motion_filter(motion, frames, offset=0):
     return f"zoompan=z='{z}':x='{x}':y='ih/2-ih/zoom/2':d=1:s=1080x1920:fps=30"
 
 
-def render_clip(project, directory, background, subtitle, name, duration, frames, cancel, process_register,
-                offset=0, first=True, last=True):
-    motion = motion_filter(project.get('motion', 'zoom'), frames, offset)
-    fade = ''
+# Half-length of a crossfade on each side of a scene boundary (matches iPhone).
+CROSSFADE_HALF = 0.25
+
+
+def crossfade_frames(previous, following):
+    """Frames blended on each side of a boundary between two clips (0 for none)."""
+    return max(0, round(min(CROSSFADE_HALF, previous / 2, following / 2) * 30))
+
+
+def render_shot(project, directory, shots, j, cancel, process_register):
+    """Render one clip, crossfading with the neighbouring scene at scene boundaries.
+
+    The dissolve straddles each boundary: the next scene is blended in over the
+    last frames of a scene (0 -> 50%) and the previous scene is blended out over
+    the first frames of the next (50% -> 0). No frame is darkened, the clip keeps
+    its exact duration, so the total length and subtitle timing are unchanged.
+    The very first and last frames of the video are never blended or faded.
+    """
+    shot, blends = shots[j], []
     if project.get('transition', 'fade') == 'fade':
-        if first:
-            fade += ',fade=t=in:st=0:d=0.25'
-        if last:
-            fade += f',fade=t=out:st={max(0,duration-.25):.6f}:d=0.25'
-    filters = f'[0:v]{motion},setsar=1[bg];[bg][1:v]overlay=0:0:shortest=1{fade},format=yuv420p[v]'
-    run_ffmpeg(['-loop', '1', '-framerate', '30', '-i', background,
-                '-loop', '1', '-framerate', '30', '-i', subtitle,
-                '-filter_complex_threads', '1', '-filter_complex', filters, '-map', '[v]',
+        before = shots[j-1] if j > 0 and shots[j-1]['scene'] != shot['scene'] else None
+        after = shots[j+1] if j+1 < len(shots) and shots[j+1]['scene'] != shot['scene'] else None
+        if before and (window := crossfade_frames(before['duration'], shot['duration'])):
+            # The previous scene continues past its end, holding its final motion pose.
+            blends.append({**before, 'offset': before['offset'] + round(before['duration']*30),
+                           'start': 0, 'length': window, 'fade': 'out'})
+        if after and (window := crossfade_frames(shot['duration'], after['duration'])):
+            blends.append({**after, 'offset': after['offset'] - window,
+                           'start': round(shot['duration']*30) - window, 'length': window, 'fade': 'in'})
+    render_clip(project, directory, shot['background'], shot['subtitle'], shot['name'], shot['duration'],
+                shot['frames'], cancel, process_register, shot['offset'], blends)
+
+
+def render_clip(project, directory, background, subtitle, name, duration, frames, cancel, process_register,
+                offset=0, blends=()):
+    motion = project.get('motion', 'zoom')
+    inputs = ['-loop', '1', '-framerate', '30', '-i', background,
+              '-loop', '1', '-framerate', '30', '-i', subtitle]
+    filters = [f'[0:v]{motion_filter(motion, frames, offset)},setsar=1[bg]',
+               '[bg][1:v]overlay=0:0:shortest=1[base0]']
+    for n, blend in enumerate(blends):
+        inputs += ['-loop', '1', '-framerate', '30', '-i', blend['background'],
+                   '-loop', '1', '-framerate', '30', '-i', blend['subtitle']]
+        a, b = 2 + 2*n, 3 + 2*n
+        # The neighbour's full frame is laid over this clip at up to 50% opacity,
+        # reaching 50% at the scene boundary, so the photos dissolve directly into
+        # each other. Frames are counted exactly; the overlay ends after `length`.
+        filters.append(f'[{a}:v]{motion_filter(motion, blend["frames"], blend["offset"])},setsar=1[nbg{n}]')
+        filters.append(f'[nbg{n}][{b}:v]overlay=0:0:shortest=1,trim=end_frame={blend["length"]},'
+                       f'format=rgba,colorchannelmixer=aa=0.5,fade=t={blend["fade"]}:s=0:n={blend["length"]}:alpha=1,'
+                       f'setpts=PTS-STARTPTS+{blend["start"]}/(30*TB)[nb{n}]')
+        filters.append(f'[base{n}][nb{n}]overlay=0:0:eof_action=pass[base{n+1}]')
+    filters.append(f'[base{len(blends)}]format=yuv420p[v]')
+    run_ffmpeg([*inputs, '-filter_complex_threads', '1', '-filter_complex', ';'.join(filters), '-map', '[v]',
                 '-t', str(duration), '-r', '30', '-an', '-c:v', 'libx264', '-threads', '2',
                 '-preset', 'veryfast', '-crf', '22', name], directory, cancel, process_register)
 
@@ -417,26 +503,31 @@ def render_daily(project, directory, assets, cancel, progress, process_register)
     from .daily import validate_photos
     validate_photos(project, assets)
     directory.mkdir(parents=True, exist_ok=True)
-    cursor, srt, clips = 0., [], []
+    cursor, srt, shots = 0., [], []
+    count = len(project['photos'])
     for i, (photo, scene) in enumerate(zip(project['photos'], project['scenes'])):
         if cancel.is_set():
             raise InterruptedError('렌더링을 취소했습니다.')
-        duration = scene['duration']; frames = round(duration * 30)
+        duration = scene['duration']
         background = photo_background(photo, assets)
         subtitle = photo_caption(project, scene, assets)
         background.save(directory / f'background-{i:02}.png')
         subtitle.save(directory / f'subtitle-{i:02}.png')
         preview = background.convert('RGBA'); preview.alpha_composite(subtitle)
         preview.convert('RGB').save(directory / f'card-{i+1:02}.png')
-        name = f'clip-{i:02}.mp4'; clips.append(name)
-        progress(5+int(i/len(project['photos'])*80), f'사진 {i+1}/{len(project["photos"])} 장면 제작 중')
-        render_clip(project, directory, f'background-{i:02}.png', f'subtitle-{i:02}.png',
-                    name, duration, frames, cancel, process_register,
-                    first=i>0, last=i<len(project['photos'])-1)
+        # Every image is saved first so a clip can crossfade into the next scene.
+        shots.append({'name': f'clip-{i:02}.mp4', 'scene': i, 'background': f'background-{i:02}.png',
+                      'subtitle': f'subtitle-{i:02}.png', 'duration': duration,
+                      'frames': round(duration * 30), 'offset': 0})
         text=scene.get('narration', '').strip()
         if text:
             srt.append(f'{len(srt)+1}\n{timestamp(cursor)} --> {timestamp(cursor+duration)}\n{text}\n')
         cursor += duration
+        progress(5+int((i+1)/count*15), f'사진 {i+1}/{count} 준비 중')
+    clips = [shot['name'] for shot in shots]
+    for i in range(count):
+        progress(20+int(i/count*65), f'사진 {i+1}/{count} 장면 제작 중')
+        render_shot(project, directory, shots, i, cancel, process_register)
     (directory/'clips.txt').write_text(''.join(f"file '{name}'\n" for name in clips), encoding='utf-8')
     args = ['-f', 'concat', '-safe', '0', '-i', 'clips.txt']
     track = next((t for t in MUSIC if t['id']==project.get('music_id')), None)

@@ -53,7 +53,9 @@ def test_motion_transition_and_scene_order_in_real_mp4(client, tmp_path, kind, m
     if motion == 'still': assert first.crop((0,100,1080,1000)).tobytes() == later.crop((0,100,1080,1000)).tobytes()
     else: assert first.crop((0,100,1080,1000)).tobytes() != later.crop((0,100,1080,1000)).tobytes()
     brightness=sum(ImageStat.Stat(boundary).mean)/3
-    assert brightness < 5 if transition=='fade' else brightness > 60
+    # A crossfade never dips to black; the boundary frame mixes both photos.
+    assert brightness > 60
+    if transition == 'fade': assert boundary.getpixel((500,1300))[0] > 80 and boundary.getpixel((500,1300))[2] > 80
     assert decode(video,0).getpixel((500,1300))[0] > 150
     assert decode(video,4-1/30).getpixel((500,1300))[2] > 150
     assert result['duration']==4 and result['layout_version']==4

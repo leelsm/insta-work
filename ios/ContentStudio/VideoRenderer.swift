@@ -224,53 +224,88 @@ enum VideoRenderer {
         return image
     }
 
+    /// Half-length of the crossfade on each side of a scene boundary. The next
+    /// scene is blended in over the last 0.25s and the previous one blended out over
+    /// the first 0.25s, reaching 50% exactly at the cut. Scene durations, the total
+    /// length and subtitle timing are unchanged; the first/last frames never fade.
+    static let crossfadeHalf = 0.25
+
+    /// Neighbouring scene and its opacity for a crossfade frame, or nil.
+    static func crossfade(_ project: StudioProject, index: Int, elapsed: Double?) -> (index: Int, elapsed: Double, opacity: Double)? {
+        guard project.effectiveTransition == "fade", let elapsed, project.scenes.indices.contains(index) else { return nil }
+        let duration = project.scenes[index].duration
+        if index > 0 {
+            let window = min(crossfadeHalf, duration / 2, project.scenes[index - 1].duration / 2)
+            if window > 0 && elapsed < window {
+                return (index - 1, project.scenes[index - 1].duration + elapsed, 0.5 - elapsed / window / 2)
+            }
+        }
+        if index < project.scenes.count - 1 {
+            let window = min(crossfadeHalf, duration / 2, project.scenes[index + 1].duration / 2)
+            let remaining = duration - elapsed
+            if window > 0 && remaining < window {
+                return (index + 1, -remaining, 0.5 - remaining / window / 2)
+            }
+        }
+        return nil
+    }
+
     static func frame(_ project: StudioProject, scene: StudioScene, index: Int, assets: URL,
                       progress: Double = 0, elapsed: Double? = nil, outputSize: CGSize? = nil) throws -> UIImage {
         let pixelWidth = min(size.width, max(1, (outputSize?.width ?? size.width) * (outputSize == nil ? 1 : 3)))
         let photo = background(scene, assets: assets, pixelWidth: pixelWidth)
         if project.isDaily && photo == nil { throw StudioError.invalidFile("장면 \(index + 1)의 사진이 없습니다. 사진을 다시 선택해주세요.") }
+        var blend: (scene: StudioScene, photo: UIImage?, progress: Double, opacity: Double)?
+        if let neighbor = crossfade(project, index: index, elapsed: elapsed) {
+            let other = project.scenes[neighbor.index]
+            let otherPhoto = background(other, assets: assets, pixelWidth: pixelWidth)
+            if !(project.isDaily && otherPhoto == nil) {
+                blend = (other, otherPhoto, neighbor.elapsed / other.duration, neighbor.opacity)
+            }
+        }
         let format = UIGraphicsImageRendererFormat(); format.scale = outputSize == nil ? 1 : 3
         format.preferredRange = .standard; format.opaque = true
         let targetSize = outputSize ?? size
         let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
         return renderer.image { context in
             context.cgContext.scaleBy(x: targetSize.width / size.width, y: targetSize.height / size.height)
-            (project.template == "ink" ? UIColor(red: 0.09, green: 0.11, blue: 0.14, alpha: 1) :
-                UIColor(red: 0.96, green: 0.94, blue: 0.9, alpha: 1)).setFill()
-            UIRectFill(CGRect(origin: .zero, size: size))
-            if let photo {
-                let p = CGFloat(min(1, max(0, progress)))
-                let motion = project.effectiveMotion
-                let zoom: CGFloat = motion == "zoom" ? 1 + 0.045 * p : motion == "zoom-out" ? 1 + 0.045 * (1-p) : motion.hasPrefix("pan-") ? 1.045 : 1
-                let shift: CGFloat = motion == "pan-left" ? size.width * 0.045 * (0.5-p) : motion == "pan-right" ? size.width * 0.045 * (p-0.5) : 0
-                photo.draw(in: CGRect(x: size.width * (1-zoom)/2 + shift,
-                                      y: size.height * (1-zoom)/2, width: size.width * zoom, height: size.height * zoom))
+            draw(project, scene: scene, photo: photo, progress: progress, assets: assets)
+            if let blend {
+                // True crossfade: the neighbouring scene's full frame is composited on
+                // top, so the photos dissolve directly into each other without black.
+                context.cgContext.setAlpha(CGFloat(blend.opacity))
+                context.cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
+                draw(project, scene: blend.scene, photo: blend.photo, progress: blend.progress, assets: assets)
+                context.cgContext.endTransparencyLayer()
+                context.cgContext.setAlpha(1)
             }
-            var text = scene.narration
-            if !project.isDaily {
-                if text.isEmpty { text = scene.body.isEmpty ? scene.title : scene.body }
-                let parts = captionParts(text)
-                text = parts[min(parts.count-1, Int(min(0.9999, max(0, progress)) * Double(parts.count)))]
-            }
-            caption(text, project: project, assets: assets)
-            if let credit = scene.imageCredit, !credit.isEmpty {
-                UIColor.black.withAlphaComponent(0.8).setFill()
-                UIRectFillUsingBlendMode(CGRect(x: 68, y: 1785, width: 944, height: 75), .normal)
-                drawText(credit, rect: CGRect(x: 85, y: 1800, width: 910, height: 45), size: 24,
-                         color: .white, font: .systemFont(ofSize: 24))
-            }
-            if project.effectiveTransition == "fade", let elapsed {
-                // Fade between scenes. Keep the first/last exported frames visible
-                // so Photos and messaging previews do not pick a black frame.
-                let fadeIn = index == 0 ? 1 : elapsed / 0.25
-                let fadeOut = index == project.scenes.count - 1 ? 1 : (scene.duration-elapsed)/0.25
-                let opacity = max(0, min(1, fadeIn, fadeOut))
-                if opacity < 1 {
-                    UIColor.black.withAlphaComponent(1-opacity).setFill()
-                    // UIRectFill uses .copy and erases the photo, even at alpha 0.
-                    UIRectFillUsingBlendMode(CGRect(origin: .zero, size: size), .normal)
-                }
-            }
+        }
+    }
+
+    private static func draw(_ project: StudioProject, scene: StudioScene, photo: UIImage?, progress: Double, assets: URL) {
+        (project.template == "ink" ? UIColor(red: 0.09, green: 0.11, blue: 0.14, alpha: 1) :
+            UIColor(red: 0.96, green: 0.94, blue: 0.9, alpha: 1)).setFill()
+        UIRectFill(CGRect(origin: .zero, size: size))
+        if let photo {
+            let p = CGFloat(min(1, max(0, progress)))
+            let motion = project.effectiveMotion
+            let zoom: CGFloat = motion == "zoom" ? 1 + 0.045 * p : motion == "zoom-out" ? 1 + 0.045 * (1-p) : motion.hasPrefix("pan-") ? 1.045 : 1
+            let shift: CGFloat = motion == "pan-left" ? size.width * 0.045 * (0.5-p) : motion == "pan-right" ? size.width * 0.045 * (p-0.5) : 0
+            photo.draw(in: CGRect(x: size.width * (1-zoom)/2 + shift,
+                                  y: size.height * (1-zoom)/2, width: size.width * zoom, height: size.height * zoom))
+        }
+        var text = scene.narration
+        if !project.isDaily {
+            if text.isEmpty { text = scene.body.isEmpty ? scene.title : scene.body }
+            let parts = captionParts(text)
+            text = parts[min(parts.count-1, Int(min(0.9999, max(0, progress)) * Double(parts.count)))]
+        }
+        caption(text, project: project, assets: assets)
+        if let credit = scene.imageCredit, !credit.isEmpty {
+            UIColor.black.withAlphaComponent(0.8).setFill()
+            UIRectFillUsingBlendMode(CGRect(x: 68, y: 1785, width: 944, height: 75), .normal)
+            drawText(credit, rect: CGRect(x: 85, y: 1800, width: 910, height: 45), size: 24,
+                     color: .white, font: .systemFont(ofSize: 24))
         }
     }
 

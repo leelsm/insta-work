@@ -231,6 +231,7 @@ import UIKit
         let audio = try await asset.loadTracks(withMediaType: .audio)
         let duration = try await asset.load(.duration)
         checks["daily_mp4_with_offset_music"] = !audio.isEmpty && abs(duration.seconds - 4) < 0.05
+        checks.merge(try await crossfadeChecks(project: daily, video: result, assets: store.assets)) { _, new in new }
         let jpeg = try Data(contentsOf: VideoRenderer.thumbnailURL(for: result))
         let expectedCover = try VideoRenderer.frame(daily, scene: daily.scenes[1], index: 1, assets: store.assets, progress: 0.5).jpegData(compressionQuality: 0.9)
         checks["thumbnail_uses_selected_scene"] = jpeg == expectedCover
@@ -252,6 +253,138 @@ import UIKit
         catch { checks["render_cancelled"] = false }
         checks["cancelled_render_cleans_temporary_video"] = !(try FileManager.default.contentsOfDirectory(at: store.exports, includingPropertiesForKeys: nil)).contains { $0.lastPathComponent.hasSuffix("-silent.mp4") }
         checks.merge(try await fontSizeChecks(store: store)) { _, new in new }
+        checks.merge(try await emojiChecks(store: store)) { _, new in new }
+        checks.merge(subtitleSpeedChecks()) { _, new in new }
+        return checks
+    }
+
+    /// D1: the fade transition is a true crossfade. Every decoded frame keeps the
+    /// photos visible (no black dip), the cut frame is a 50/50 mix of both scenes and
+    /// the frame count/duration equal the sum of the scene durations.
+    nonisolated static func crossfadeChecks(project: StudioProject, video: URL, assets: URL) async throws -> [String: Bool] {
+        var checks: [String: Bool] = [:]
+        let asset = AVURLAsset(url: video)
+        let duration = try await asset.load(.duration).seconds
+        let expectedFrames = project.scenes.reduce(0) { $0 + Int(($1.duration * Double(VideoRenderer.fps)).rounded()) }
+        checks["crossfade_duration_unchanged"] = abs(duration - project.duration) < 0.02
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { checks["crossfade_video_track"] = false; return checks }
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(output); reader.startReading()
+        var means: [Double] = []
+        while let sample = output.copyNextSampleBuffer() {
+            guard let buffer = CMSampleBufferGetImageBuffer(sample) else { continue }
+            CVPixelBufferLockBaseAddress(buffer, .readOnly)
+            let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+            let row = CVPixelBufferGetBytesPerRow(buffer), width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+            var sum = 0.0, count = 0.0
+            for y in stride(from: 0, to: height, by: 24) { for x in stride(from: 0, to: width, by: 24) {
+                let p = base + y * row + x * 4
+                sum += 0.114 * Double(p[0]) + 0.587 * Double(p[1]) + 0.299 * Double(p[2]); count += 1
+            } }
+            CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
+            means.append(sum / count)
+        }
+        checks["crossfade_frame_count_unchanged"] = means.count == expectedFrames
+        // Scene midpoints are the reference brightness; the darkest frame must stay close to them.
+        var cursor = 0, sceneMeans: [Double] = []
+        for scene in project.scenes {
+            let count = Int((scene.duration * Double(VideoRenderer.fps)).rounded())
+            if means.indices.contains(cursor + count / 2) { sceneMeans.append(means[cursor + count / 2]) }
+            cursor += count
+        }
+        checks["crossfade_no_black_frame"] = !means.isEmpty && sceneMeans.count == project.scenes.count && means.min()! > sceneMeans.min()! * 0.8
+        checks["crossfade_first_last_not_dark"] = (means.first ?? 0) > sceneMeans.first! * 0.9 && (means.last ?? 0) > sceneMeans.last! * 0.9
+
+        // The frame at the cut must be the rendered crossfade, visibly different from either photo alone.
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = .zero
+        let boundary = project.scenes[0].duration
+        let decoded = MobileVerification.photoPixels(try await generator.image(at: CMTime(seconds: boundary, preferredTimescale: 600)).image)
+        let mixed = MobileVerification.photoPixels(try VideoRenderer.frame(project, scene: project.scenes[1], index: 1, assets: assets, progress: 0, elapsed: 0).cgImage!)
+        let incoming = MobileVerification.photoPixels(try VideoRenderer.frame(project, scene: project.scenes[1], index: 1, assets: assets, progress: 0).cgImage!)
+        let outgoing = MobileVerification.photoPixels(try VideoRenderer.frame(project, scene: project.scenes[0], index: 0, assets: assets, progress: 1).cgImage!)
+        func error(_ a: [UInt8], _ b: [UInt8]) -> Double {
+            zip(a, b).enumerated().filter { $0.offset % 4 != 3 }.reduce(0.0) { $0 + Double(abs(Int($1.element.0)-Int($1.element.1))) } / Double(64*114*3)
+        }
+        checks["crossfade_cut_frame_matches_mix"] = error(decoded, mixed) < 12
+        checks["crossfade_cut_frame_blends_both"] = error(decoded, incoming) > 20 && error(decoded, outgoing) > 20
+        var cut = project; cut.transition = "cut"
+        checks["crossfade_cut_transition_unblended"] = VideoRenderer.crossfade(cut, index: 1, elapsed: 0) == nil
+        checks["crossfade_window_symmetric"] = VideoRenderer.crossfade(project, index: 0, elapsed: 0) == nil
+            && VideoRenderer.crossfade(project, index: project.scenes.count - 1, elapsed: project.scenes.last!.duration - 0.01) == nil
+            && abs((VideoRenderer.crossfade(project, index: 1, elapsed: 0)?.opacity ?? 0) - 0.5) < 0.001
+            && VideoRenderer.crossfade(project, index: 1, elapsed: 0.3) == nil
+        return checks
+    }
+
+    /// D2: emoji in subtitles render as colour glyphs (not tofu) with the default and a
+    /// bundled font, stay inside the measured subtitle box and survive H.264 encoding.
+    static func emojiChecks(store: StudioStore) async throws -> [String: Bool] {
+        var checks: [String: Bool] = [:]
+        let white = UIGraphicsImageRenderer(size: CGSize(width: 1080, height: 1920)).image { _ in
+            UIColor.white.setFill(); UIRectFill(CGRect(x: 0, y: 0, width: 1080, height: 1920))
+        }
+        let photoID = try store.importPhoto(white.jpegData(compressionQuality: 0.9)!)
+        var project = StudioProject(); var scene = StudioScene(title: "이모지", photoID: photoID)
+        scene.narration = "오늘 🎉😀 가족 👨‍👩‍👧 👍🏽 🇰🇷 ❤️ 최고"; scene.duration = 0.6
+        project.scenes = [scene]; project.subtitleStyle = "box"; project.motion = "still"; project.transition = "cut"; project.musicID = ""
+        project.subtitleSize = 72
+        /// Saturated (colour) pixels and the horizontal extent of the dark subtitle box.
+        func analyse(_ image: CGImage) -> (color: Int, colorMin: Int, colorMax: Int, boxMin: Int, boxMax: Int) {
+            let w = 540, h = 960
+            var pixels = [UInt8](repeating: 0, count: w * h * 4)
+            pixels.withUnsafeMutableBytes { bytes in
+                let context = CGContext(data: bytes.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                    space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)!
+                context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            }
+            var color = 0, colorMin = w, colorMax = 0, boxMin = w, boxMax = 0
+            for y in 0..<h { for x in 0..<w {
+                let i = (y * w + x) * 4
+                let r = Int(pixels[i]), g = Int(pixels[i+1]), b = Int(pixels[i+2])
+                if max(r, g, b) - min(r, g, b) > 70 { color += 1; colorMin = min(colorMin, x); colorMax = max(colorMax, x) }
+                if max(r, g, b) < 90 { boxMin = min(boxMin, x); boxMax = max(boxMax, x) }
+            } }
+            return (color, colorMin, colorMax, boxMin, boxMax)
+        }
+        var fonts: [(String, String)] = [("system", "")]
+        if let font = store.bundledFonts.first { fonts.append((font.id, try store.importBundledFont(font))) }
+        for (name, id) in fonts {
+            project.fontAssetID = id
+            let frame = try VideoRenderer.frame(project, scene: scene, index: 0, assets: store.assets)
+            let result = analyse(frame.cgImage!)
+            checks["emoji_color_preview_" + name] = result.color > 400
+            checks["emoji_inside_caption_box_" + name] = result.color > 0 && result.colorMin > result.boxMin && result.colorMax < result.boxMax
+            if name == "system" { try? frame.pngData()?.write(to: FileManager.default.temporaryDirectory.appendingPathComponent("render-check-emoji-frame.png")) }
+        }
+        var plain = project; plain.scenes[0].narration = "오늘 가족 최고"; plain.fontAssetID = ""
+        checks["emoji_plain_text_has_no_color"] = analyse(try VideoRenderer.frame(plain, scene: plain.scenes[0], index: 0, assets: store.assets).cgImage!).color < 20
+        project.fontAssetID = ""
+        let url = try await VideoRenderer.render(project, assets: store.assets, exports: store.exports) { _, _ in }
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url)); generator.appliesPreferredTrackTransform = true
+        let encoded = try await generator.image(at: CMTime(seconds: 0.3, preferredTimescale: 600)).image
+        checks["emoji_color_encoded_mp4"] = analyse(encoded).color > 300
+        return checks
+    }
+
+    /// D3: the fast-subtitle rule matches the PC version (7 chars/s + 1s, 0.5s steps, limits).
+    nonisolated static func subtitleSpeedChecks() -> [String: Bool] {
+        func scenes(_ durations: [Double]) -> [StudioScene] { durations.map { var s = StudioScene(); s.duration = $0; return s } }
+        let seven = String(repeating: "가", count: 7), fifteen = String(repeating: "가", count: 15)
+        var checks: [String: Bool] = [:]
+        checks["speed_rule_values"] = SubtitleSpeed.recommendedDuration("") == 0 && SubtitleSpeed.recommendedDuration("   ") == 0
+            && SubtitleSpeed.recommendedDuration(seven) == 2 && SubtitleSpeed.recommendedDuration(seven + seven) == 3
+            && SubtitleSpeed.recommendedDuration(fifteen) == 3.5 && SubtitleSpeed.recommendedDuration("가 나 다\n라") == SubtitleSpeed.recommendedDuration("가나다라")
+        checks["speed_rule_grapheme_count"] = SubtitleSpeed.readableLength("👨‍👩‍👧🇰🇷👍🏽❤️") == 4
+        let long = String(repeating: "가", count: 70) // 11s
+        checks["speed_no_warning_when_long_enough"] = SubtitleSpeed.check(scenes([11]), index: 0, text: long) == nil && SubtitleSpeed.check(scenes([2]), index: 0, text: "") == nil
+        let warn = SubtitleSpeed.check(scenes([4, 4]), index: 0, text: long)
+        checks["speed_warning_recommends"] = warn?.recommended == 11 && warn?.current == 4 && warn?.applicable == 11
+        let total = SubtitleSpeed.check(scenes([4, 30, 30, 30, 30, 30, 22.5]), index: 0, text: long)
+        checks["speed_apply_respects_180_total"] = total?.applicable == 7.5
+        checks["speed_apply_none_at_total_limit"] = SubtitleSpeed.check(scenes([4, 30, 30, 30, 30, 30, 26]), index: 0, text: long).map { $0.applicable == nil } ?? false
+        checks["speed_apply_clamped_to_30"] = SubtitleSpeed.check(scenes([4]), index: 0, text: String(repeating: "가", count: 210))?.applicable == 30
         return checks
     }
 

@@ -21,8 +21,8 @@ def test_clean_subtitle_shadow_and_text_share_one_layout(monkeypatch):
     calls = []
     original = renderer.draw_lines
     monkeypatch.setattr(renderer, 'draw_lines',
-                        lambda d, lines, f, step, x, y, color: (calls.append((list(lines), f.size, x, y)),
-                                                                original(d, lines, f, step, x, y, color)))
+                        lambda d, lines, f, step, x, y, color, **kw: (calls.append((list(lines), f.size, x, y)),
+                                                                      original(d, lines, f, step, x, y, color, **kw)))
     project = {'subtitle_style': 'clean', 'subtitle_size': 72}
     assert caption_layer(project, LONG).getbbox()
     shadow, text = calls

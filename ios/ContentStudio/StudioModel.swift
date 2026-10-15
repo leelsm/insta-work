@@ -236,3 +236,34 @@ enum StudioError: LocalizedError {
         }
     }
 }
+
+/// Fast-subtitle rule, identical to the PC version (frontend/src/readingSpeed.ts):
+/// readers need about 7 characters per second plus a 1 second margin.
+enum SubtitleSpeed {
+    static let charactersPerSecond = 7.0, marginSeconds = 1.0
+    static let sceneMinSeconds = 2.0, sceneMaxSeconds = 30.0, totalMaxSeconds = 180.0
+
+    /// Visible grapheme clusters, ignoring whitespace (an emoji ZWJ sequence counts as 1).
+    static func readableLength(_ text: String) -> Int { text.filter { !$0.isWhitespace }.count }
+
+    /// Seconds needed to read `text`, rounded up to the editor's 0.5s step. 0 for empty text.
+    static func recommendedDuration(_ text: String) -> Double {
+        let length = readableLength(text)
+        guard length > 0 else { return 0 }
+        return ((Double(length) / charactersPerSecond + marginSeconds) * 2 - 1e-9).rounded(.up) / 2
+    }
+
+    /// Warning for scene `index`, or nil when its subtitle can be read comfortably.
+    /// `applicable` is the duration the one-click fix may set: clamped to the scene limits
+    /// and to what the 180 second total still allows; nil when it cannot be lengthened.
+    static func check(_ scenes: [StudioScene], index: Int, text: String) -> (recommended: Double, current: Double, applicable: Double?)? {
+        guard scenes.indices.contains(index) else { return nil }
+        let current = scenes[index].duration
+        let recommended = recommendedDuration(text)
+        guard recommended > 0, current < recommended else { return nil }
+        let others = scenes.enumerated().reduce(0.0) { $1.offset == index ? $0 : $0 + $1.element.duration }
+        let limit = min(sceneMaxSeconds, ((totalMaxSeconds - others) * 2 + 1e-9).rounded(.down) / 2)
+        let target = max(sceneMinSeconds, min(recommended, limit))
+        return (recommended, current, target > current ? target : nil)
+    }
+}

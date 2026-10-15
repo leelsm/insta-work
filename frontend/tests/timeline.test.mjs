@@ -21,3 +21,29 @@ test('news captions advance in readable chunks',()=>{
  const text='가'.repeat(130)
  assert.deepEqual(captionParts(text).map(x=>x.length),[64,64,2])
 })
+test('news caption boundaries preserve whole emoji clusters and match renderer code-point limits',()=>{
+ for(const cluster of ['👨‍👩‍👧','👍🏽','🇰🇷','😀','#️⃣','❤️']){
+  const text='가'.repeat(63)+cluster+'나'
+  const parts=captionParts(text)
+  assert.equal(parts.join(''),text)
+  assert.ok(parts.some(part=>part.includes(cluster)),cluster)
+  assert.ok(parts.every(part=>!/[\uD800-\uDBFF]$/.test(part)))
+ }
+ assert.deepEqual(captionParts('😀'.repeat(65)),['😀'.repeat(64),'😀'])
+})
+test('crossfade blends neighbouring scenes around each boundary without changing timing',async()=>{
+ const {crossfadeAt}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'))
+ const scenes=[{duration:3},{duration:4},{duration:2}]
+ assert.deepEqual([crossfadeAt(scenes,0,'fade').neighbor,crossfadeAt(scenes,0,'fade').opacity],[-1,0])
+ assert.equal(crossfadeAt(scenes,1.5,'fade').neighbor,-1)
+ const before=crossfadeAt(scenes,2.9,'fade')
+ assert.equal(before.index,0);assert.equal(before.neighbor,1);assert.ok(Math.abs(before.opacity-.3)<1e-9)
+ const at=crossfadeAt(scenes,3,'fade')
+ assert.equal(at.index,1);assert.equal(at.neighbor,0);assert.equal(at.opacity,.5)
+ const after=crossfadeAt(scenes,3.2,'fade')
+ assert.equal(after.neighbor,0);assert.ok(Math.abs(after.opacity-.1)<1e-9)
+ assert.equal(crossfadeAt(scenes,8.9,'fade').neighbor,-1)
+ assert.equal(crossfadeAt(scenes,9,'fade').opacity,0)
+ assert.equal(crossfadeAt(scenes,2.9,'cut').neighbor,-1)
+ assert.equal(crossfadeAt(scenes,3.2,'fade').start,3)
+})
